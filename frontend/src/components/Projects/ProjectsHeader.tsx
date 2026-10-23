@@ -7,10 +7,10 @@ import {
   List,
   Plus,
   Upload,
-  SlidersHorizontal,
   X,
   FilePlus,
   Loader2,
+  ChevronDown,
 } from "lucide-react";
 import { DashboardViewCategory } from "./ProjectsSidebar";
 
@@ -28,6 +28,7 @@ interface ProjectsHeaderProps {
   onCreateEmptyProject?: () => void;
   isCreatingEmpty?: boolean;
   onOpenImportProject?: () => void;
+  projectCount?: number;
 }
 
 export default function ProjectsHeader({
@@ -44,155 +45,152 @@ export default function ProjectsHeader({
   onCreateEmptyProject,
   isCreatingEmpty = false,
   onOpenImportProject,
+  projectCount = 0,
 }: ProjectsHeaderProps) {
   const getCategoryTitle = () => {
     switch (category) {
       case "recent":
-        return "Recent Projects";
+        return "Recents";
       case "starred":
-        return "Starred Projects";
+        return "Starred";
       case "templates":
-        return "Project Templates";
+        return "Templates";
       case "trash":
-        return "Trash Bin";
+        return "Trash";
       case "all":
       default:
         return "All Projects";
     }
   };
 
-  const getCategorySubtitle = () => {
-    switch (category) {
-      case "recent":
-        return "Jump back into projects you've recently worked on.";
-      case "starred":
-        return "Pinned favorite projects for instant access.";
-      case "templates":
-        return "Pre-configured templates to kickstart your next application.";
-      case "trash":
-        return "Deleted projects can be restored or permanently removed.";
-      case "all":
-      default:
-        return "Manage, explore, and launch your browser-based coding workspaces.";
-    }
-  };
-
   return (
-    <div className="p-6 sm:p-8 border-b border-[#eaeaea] bg-white space-y-5">
-      {/* Top Title & CTA Row */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#171717]">
-            {getCategoryTitle()}
-          </h1>
-          <p className="text-xs sm:text-sm text-neutral-500 mt-1">
-            {getCategorySubtitle()}
-          </p>
+    <header className="border-b border-[#e5e7eb] bg-white sticky top-0 z-20 select-none">
+      {/* Top Compact Navigation Bar */}
+      <div className="h-12 px-6 flex items-center justify-between gap-4 border-b border-[#f0f0f2]">
+        {/* Search Bar - Figma Style */}
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search files and projects..."
+            className="w-full bg-[#f3f4f6] hover:bg-[#eceef1] focus:bg-white border border-transparent focus:border-[#0d99ff] rounded-md pl-8 pr-12 py-1.5 text-xs text-neutral-900 placeholder:text-neutral-400 outline-none transition-all"
+          />
+          {searchQuery ? (
+            <button
+              type="button"
+              onClick={() => onSearchChange("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700 p-0.5 cursor-pointer"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          ) : (
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-neutral-400 font-mono border border-neutral-200/80 rounded px-1 py-0.2 bg-white/60">
+              Ctrl K
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-2.5 self-start sm:self-auto shrink-0 flex-wrap">
+        {/* Top-Right Quick Action Buttons */}
+        <div className="flex items-center gap-2 shrink-0">
           {onOpenImportProject && (
             <button
               type="button"
               onClick={onOpenImportProject}
-              className="inline-flex items-center justify-center gap-2 py-2 px-3.5 rounded-xl border border-[#eaeaea] hover:bg-neutral-50 text-neutral-700 text-xs sm:text-sm font-semibold shadow-2xs transition cursor-pointer"
+              className="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-md border border-[#e5e7eb] hover:bg-[#f5f5f5] text-neutral-700 text-xs font-medium shadow-2xs transition cursor-pointer"
             >
-              <Upload className="w-4 h-4 text-[var(--color-primary)]" />
-              <span>Import Project</span>
+              <Upload className="w-3.5 h-3.5 text-neutral-500" />
+              <span>Import</span>
             </button>
           )}
+
           {onCreateEmptyProject && (
             <button
               type="button"
               onClick={onCreateEmptyProject}
               disabled={isCreatingEmpty}
-              className="inline-flex items-center justify-center gap-2 py-2 px-3.5 rounded-xl border border-[#d1d1d6] hover:border-[var(--color-primary)] bg-white hover:bg-neutral-50 text-neutral-800 hover:text-[var(--color-primary)] text-xs sm:text-sm font-semibold shadow-2xs transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-md border border-[#e5e7eb] hover:bg-[#f5f5f5] text-neutral-700 text-xs font-medium shadow-2xs transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {isCreatingEmpty ? (
-                <Loader2 className="w-4 h-4 animate-spin text-[var(--color-primary)]" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0d99ff]" />
               ) : (
-                <FilePlus className="w-4 h-4 text-[var(--color-primary)]" />
+                <FilePlus className="w-3.5 h-3.5 text-neutral-500" />
               )}
               <span>Empty Project</span>
             </button>
           )}
+
           <button
             type="button"
             onClick={onOpenNewProject}
-            className="inline-flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white text-xs sm:text-sm font-semibold shadow-xs transition cursor-pointer"
+            className="inline-flex items-center gap-1.5 py-1.5 px-3 rounded-md bg-[#0d99ff] hover:bg-[#0b87e3] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-3.5 h-3.5" />
             <span>New Project</span>
           </button>
         </div>
       </div>
 
-      {/* Controls Row: Search + Filters + Sort + View Mode */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pt-2">
-        {/* Search Bar */}
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search projects by name..."
-            className="w-full bg-[#f9f9fb] border border-[#e5e5e7] hover:border-[#d1d1d6] focus:border-[var(--color-primary)] rounded-xl pl-9 pr-8 py-2 text-xs text-[#171717] outline-none transition"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => onSearchChange("")}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700 p-0.5"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+      {/* Sub Toolbar: Page Title, Framework Filters, Sorting & View Toggle */}
+      <div className="h-11 px-6 flex items-center justify-between gap-4">
+        {/* Title & Item Count */}
+        <div className="flex items-center gap-2">
+          <h1 className="text-sm font-semibold text-neutral-900 tracking-tight">
+            {getCategoryTitle()}
+          </h1>
+          {projectCount > 0 && (
+            <span className="text-[11px] text-neutral-400 font-normal">
+              {projectCount} {projectCount === 1 ? "project" : "projects"}
+            </span>
           )}
         </div>
 
-        {/* Filters & Sorting Controls */}
-        <div className="flex items-center gap-2.5 flex-wrap">
+        {/* Filter, Sort and Grid/List Controls */}
+        <div className="flex items-center gap-2">
           {/* Framework Filter */}
-          <div className="flex items-center gap-1.5 bg-[#f9f9fb] border border-[#e5e5e7] rounded-lg px-2.5 py-1.5 text-xs text-neutral-700">
-            <SlidersHorizontal className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+          <div className="relative flex items-center">
             <select
               value={filterType}
               onChange={(e) => onFilterChange(e.target.value)}
-              className="bg-transparent outline-none cursor-pointer text-xs"
+              className="appearance-none bg-transparent hover:bg-neutral-100 border border-[#e5e7eb] rounded-md pl-2 pr-6 py-1 text-xs text-neutral-700 outline-none cursor-pointer transition font-medium"
             >
-              <option value="all">All Types</option>
+              <option value="all">All frameworks</option>
               <option value="react-ts">React + TS</option>
               <option value="vanilla-web">Vanilla Web</option>
               <option value="next-app">Next.js</option>
               <option value="node-api">Node.js API</option>
               <option value="blank">Blank</option>
             </select>
+            <ChevronDown className="w-3 h-3 text-neutral-400 absolute right-2 pointer-events-none" />
           </div>
 
-          {/* Sort By */}
-          <div className="flex items-center gap-1.5 bg-[#f9f9fb] border border-[#e5e5e7] rounded-lg px-2.5 py-1.5 text-xs text-neutral-700">
-            <span className="text-neutral-400 text-[11px]">Sort:</span>
+          {/* Sort Control */}
+          <div className="relative flex items-center">
             <select
               value={sortBy}
               onChange={(e) => onSortChange(e.target.value as "modified" | "name" | "created")}
-              className="bg-transparent outline-none cursor-pointer text-xs font-medium"
+              className="appearance-none bg-transparent hover:bg-neutral-100 border border-[#e5e7eb] rounded-md pl-2 pr-6 py-1 text-xs text-neutral-700 outline-none cursor-pointer transition font-medium"
             >
-              <option value="modified">Recently Modified</option>
-              <option value="name">Name (A-Z)</option>
-              <option value="created">Created Date</option>
+              <option value="modified">Recently modified</option>
+              <option value="name">Alphabetical</option>
+              <option value="created">Date created</option>
             </select>
+            <ChevronDown className="w-3 h-3 text-neutral-400 absolute right-2 pointer-events-none" />
           </div>
 
-          {/* Grid / List Mode */}
-          <div className="flex items-center bg-[#f9f9fb] border border-[#e5e5e7] p-0.5 rounded-lg">
+          <div className="h-4 w-px bg-neutral-200 mx-1" />
+
+          {/* Grid / List View Toggle */}
+          <div className="flex items-center bg-[#f3f4f6] p-0.5 rounded-md border border-[#e5e7eb]">
             <button
               type="button"
               onClick={() => onToggleViewMode("grid")}
               title="Grid view"
-              className={`p-1.5 rounded transition cursor-pointer ${
+              className={`p-1 rounded transition cursor-pointer ${
                 viewMode === "grid"
-                  ? "bg-white text-[var(--color-primary)] shadow-xs"
-                  : "text-neutral-400 hover:text-neutral-700"
+                  ? "bg-white text-neutral-900 shadow-2xs font-semibold"
+                  : "text-neutral-500 hover:text-neutral-800"
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />
@@ -201,10 +199,10 @@ export default function ProjectsHeader({
               type="button"
               onClick={() => onToggleViewMode("list")}
               title="List view"
-              className={`p-1.5 rounded transition cursor-pointer ${
+              className={`p-1 rounded transition cursor-pointer ${
                 viewMode === "list"
-                  ? "bg-white text-[var(--color-primary)] shadow-xs"
-                  : "text-neutral-400 hover:text-neutral-700"
+                  ? "bg-white text-neutral-900 shadow-2xs font-semibold"
+                  : "text-neutral-500 hover:text-neutral-800"
               }`}
             >
               <List className="w-3.5 h-3.5" />
@@ -212,7 +210,6 @@ export default function ProjectsHeader({
           </div>
         </div>
       </div>
-    </div>
+    </header>
   );
 }
-

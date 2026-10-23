@@ -11,7 +11,6 @@ import { Project, ProjectTemplate } from "@/types/editor";
 import { cloudApi } from "@/lib/cloud/cloudApi";
 import { useAuth } from "@/components/Auth/AuthContext";
 import {
-  LayoutTemplate,
   Trash2,
   FileCode,
   Globe,
@@ -21,6 +20,7 @@ import {
   Loader2,
   AlertCircle,
   RefreshCw,
+  Sparkles,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -121,7 +121,7 @@ export default function ProjectsDashboard() {
       if (currentCategory === "starred") {
         list = list.filter((p) => p.starred);
       } else if (currentCategory === "recent") {
-        list = list.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
+        list = list.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8);
       }
     }
 
@@ -155,7 +155,7 @@ export default function ProjectsDashboard() {
     return list;
   }, [projects, currentCategory, filterType, searchQuery, sortBy]);
 
-  // Project action handlers (Cloud connected)
+  // Project action handlers
   const handleStarToggle = async (id: string, e: MouseEvent) => {
     e.stopPropagation();
     const target = projects.find((p) => p.id === id);
@@ -302,14 +302,14 @@ export default function ProjectsDashboard() {
     {
       id: "react-ts",
       title: "React + TypeScript",
-      desc: "Interactive state counter & tasks",
+      desc: "Fast Vite template with TSX components",
       icon: <FileCode className="w-4 h-4 text-cyan-500" />,
       tag: "Popular",
     },
     {
       id: "vanilla-web",
       title: "HTML5 / CSS / JS",
-      desc: "DOM widgets & responsive canvas",
+      desc: "Instant live preview web canvas",
       icon: <Globe className="w-4 h-4 text-amber-500" />,
       tag: "Fast",
     },
@@ -323,21 +323,24 @@ export default function ProjectsDashboard() {
     {
       id: "node-api",
       title: "Node.js REST API",
-      desc: "HTTP routes & JSON test scripts",
+      desc: "Express server & test scripts",
       icon: <Server className="w-4 h-4 text-emerald-500" />,
       tag: "Backend",
     },
     {
       id: "blank",
       title: "Blank Project",
-      desc: "Clean minimal canvas",
-      icon: <FilePlus2 className="w-4 h-4 text-purple-500" />,
-      tag: "Minimal",
+      desc: "Minimal clean project scratchpad",
+      icon: <FilePlus2 className="w-4 h-4 text-blue-500" />,
+      tag: "Blank",
     },
   ];
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#fbfbfb] text-[#171717] font-sans antialiased">
+    <div
+      className="flex h-screen w-screen overflow-hidden bg-white text-neutral-900 antialiased select-none font-sans"
+      style={{ fontFamily: "var(--font-inter), var(--font-sans), sans-serif" }}
+    >
       {/* Figma-Inspired Left Sidebar */}
       <ProjectsSidebar
         currentCategory={currentCategory}
@@ -348,9 +351,9 @@ export default function ProjectsDashboard() {
         counts={counts}
       />
 
-      {/* Main Workspace Area */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden bg-white border-l border-[#eaeaea]">
-        {/* Top Search & Filter Header Bar */}
+      {/* Main Figma File Browser Area */}
+      <main className="flex-1 flex flex-col h-screen overflow-hidden bg-white">
+        {/* Top Figma Header & Action Bar */}
         <ProjectsHeader
           category={currentCategory}
           searchQuery={searchQuery}
@@ -365,40 +368,43 @@ export default function ProjectsDashboard() {
           onCreateEmptyProject={handleCreateEmptyProject}
           isCreatingEmpty={isCreatingEmpty}
           onOpenImportProject={() => setIsImportProjectOpen(true)}
+          projectCount={filteredProjects.length}
         />
 
-        {/* Content Container */}
-        <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
-          {/* Trash Header Banner */}
+        {/* Scrollable File Browser Canvas */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 bg-[#fafafa]/50">
+          {/* Trash Alert Banner */}
           {currentCategory === "trash" && counts.trash > 0 && (
-            <div className="p-3.5 bg-rose-50 border border-rose-200/80 rounded-xl flex items-center justify-between text-xs text-rose-800">
+            <div className="p-3 bg-rose-50 border border-rose-200/80 rounded-lg flex items-center justify-between text-xs text-rose-800">
               <div className="flex items-center gap-2">
-                <Trash2 className="w-4 h-4 text-rose-600" />
-                <span>Items in trash are preserved in cloud storage until deleted.</span>
+                <Trash2 className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>Items in trash are stored safely until permanently removed.</span>
               </div>
               <button
                 type="button"
                 onClick={handleEmptyTrash}
-                className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-semibold transition cursor-pointer"
+                className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-xs font-medium transition cursor-pointer"
               >
                 Empty Trash
               </button>
             </div>
           )}
 
-          {/* Loading Skeleton */}
+          {/* Loading Skeletons */}
           {isLoading && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div className="flex items-center gap-2 text-xs text-neutral-400">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Loading cloud workspaces...</span>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0d99ff]" />
+                <span>Loading projects...</span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-                {[1, 2, 3, 4].map((n) => (
-                  <div key={n} className="border border-[#eaeaea] rounded-2xl p-4 space-y-3 animate-pulse bg-neutral-50/50">
-                    <div className="h-32 bg-neutral-200/60 rounded-xl" />
-                    <div className="h-4 bg-neutral-200/70 rounded w-2/3" />
-                    <div className="h-3 bg-neutral-200/50 rounded w-1/3" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <div key={n} className="border border-[#e5e7eb] rounded-xl overflow-hidden bg-white animate-pulse">
+                    <div className="h-[155px] bg-neutral-200/60" />
+                    <div className="p-3 space-y-2">
+                      <div className="h-3.5 bg-neutral-200/80 rounded w-2/3" />
+                      <div className="h-2.5 bg-neutral-200/50 rounded w-1/3" />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -407,7 +413,7 @@ export default function ProjectsDashboard() {
 
           {/* Error Banner */}
           {loadError && (
-            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-xs text-rose-700">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-center justify-between text-xs text-rose-700">
               <div className="flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{loadError}</span>
@@ -415,7 +421,7 @@ export default function ProjectsDashboard() {
               <button
                 type="button"
                 onClick={fetchCloudProjects}
-                className="flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 rounded-lg hover:bg-rose-100/50 transition font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-white border border-rose-200 rounded hover:bg-rose-100/50 transition font-medium cursor-pointer"
               >
                 <RefreshCw className="w-3 h-3" />
                 <span>Retry</span>
@@ -423,33 +429,39 @@ export default function ProjectsDashboard() {
             </div>
           )}
 
-          {/* Templates Showcase Banner (Visible on 'templates' view or when empty) */}
+          {/* Templates Gallery (Shown when in 'templates' view) */}
           {currentCategory === "templates" && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <LayoutTemplate className="w-4 h-4 text-[var(--color-primary)]" />
-                <h3 className="text-sm font-bold text-[#171717]">Starter Template Gallery</h3>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#0d99ff]" />
+                  <h2 className="text-xs font-semibold text-neutral-900 uppercase tracking-wider">
+                    Starter Templates
+                  </h2>
+                </div>
+                <span className="text-xs text-neutral-400">Click any template to launch</span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5">
                 {templateShowcase.map((tpl) => (
                   <div
                     key={tpl.id}
                     onClick={() => handleCreateFromTemplate(tpl.id)}
-                    className="p-4 bg-[#fbfbfd] hover:bg-white border border-[#eaeaea] hover:border-[var(--color-primary)]/40 rounded-2xl transition cursor-pointer shadow-2xs hover:shadow-sm space-y-2 group"
+                    className="p-3.5 bg-white hover:bg-white border border-[#e5e7eb] hover:border-[#0d99ff]/50 rounded-xl transition-all duration-150 cursor-pointer shadow-2xs hover:shadow-sm space-y-2.5 group"
                   >
                     <div className="flex items-center justify-between">
-                      <div className="w-8 h-8 rounded-lg bg-white border border-[#eaeaea] flex items-center justify-center shadow-2xs group-hover:scale-105 transition-transform">
+                      <div className="w-7 h-7 rounded-lg bg-neutral-100 border border-neutral-200/60 flex items-center justify-center group-hover:scale-105 transition-transform">
                         {tpl.icon}
                       </div>
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-50 text-[var(--color-primary)] border border-purple-100">
+                      <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 border border-neutral-200">
                         {tpl.tag}
                       </span>
                     </div>
                     <div>
-                      <h4 className="text-xs font-bold text-[#171717] group-hover:text-[var(--color-primary)] transition-colors">
+                      <h3 className="text-xs font-semibold text-neutral-900 group-hover:text-[#0d99ff] transition-colors truncate">
                         {tpl.title}
-                      </h4>
-                      <p className="text-[11px] text-neutral-500 mt-0.5">{tpl.desc}</p>
+                      </h3>
+                      <p className="text-[11px] text-neutral-500 mt-0.5 line-clamp-1">{tpl.desc}</p>
                     </div>
                   </div>
                 ))}
@@ -469,9 +481,9 @@ export default function ProjectsDashboard() {
             />
           )}
 
-          {/* Projects Canvas: Grid View */}
+          {/* Projects Canvas: Grid View (Figma-Style Responsive Grid) */}
           {!isLoading && filteredProjects.length > 0 && viewMode === "grid" && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
               {filteredProjects.map((project) => (
                 <ProjectCard
                   key={project.id}
@@ -492,7 +504,7 @@ export default function ProjectsDashboard() {
 
           {/* Projects Canvas: List View */}
           {!isLoading && filteredProjects.length > 0 && viewMode === "list" && (
-            <div className="space-y-2.5">
+            <div className="space-y-1.5">
               {filteredProjects.map((project) => (
                 <ProjectCard
                   key={project.id}
@@ -537,14 +549,14 @@ export default function ProjectsDashboard() {
       {renamingProject && (
         <div
           onClick={() => setRenamingProject(null)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm bg-white border border-[#eaeaea] rounded-2xl shadow-2xl p-5 space-y-4"
+            className="w-full max-w-sm bg-white border border-[#e5e7eb] rounded-xl shadow-xl p-4 space-y-3.5"
           >
-            <h3 className="text-sm font-bold text-[#171717]">Rename Project</h3>
-            <form onSubmit={handleRenameSubmit} className="space-y-4">
+            <h3 className="text-xs font-semibold text-neutral-900">Rename Project</h3>
+            <form onSubmit={handleRenameSubmit} className="space-y-3">
               <input
                 type="text"
                 autoFocus
@@ -552,19 +564,19 @@ export default function ProjectsDashboard() {
                 onChange={(e) =>
                   setRenamingProject({ ...renamingProject, name: e.target.value })
                 }
-                className="w-full bg-[#f9f9fb] border border-[#e5e5e7] focus:border-[var(--color-primary)] rounded-xl px-3 py-2 text-xs text-[#171717] outline-none"
+                className="w-full bg-[#f9fafb] border border-[#e5e7eb] focus:border-[#0d99ff] focus:bg-white rounded-lg px-2.5 py-1.5 text-xs text-neutral-900 outline-none transition"
               />
-              <div className="flex items-center justify-end gap-2">
+              <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setRenamingProject(null)}
-                  className="px-3 py-1.5 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg cursor-pointer"
+                  className="px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-md transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white text-xs font-bold rounded-lg shadow-xs cursor-pointer"
+                  className="px-3 py-1.5 bg-[#0d99ff] hover:bg-[#0b87e3] text-white text-xs font-semibold rounded-md shadow-2xs transition cursor-pointer"
                 >
                   Save
                 </button>

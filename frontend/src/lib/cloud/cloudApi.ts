@@ -191,10 +191,35 @@ export const cloudApi = {
       if (!res.ok) throw new Error("Failed to empty trash.");
     },
 
-    async importArchive(formData: FormData): Promise<{ project: Project; detection: unknown }> {
+    async importArchive(payload: FormData | { name: string; description?: string; zipBase64: string }): Promise<{ project: Project; detection: unknown }> {
+      let requestBody: string;
+
+      if (typeof window !== "undefined" && payload instanceof FormData) {
+        const file = payload.get("file") as File;
+        const name = (payload.get("name") as string) || (file ? file.name.replace(/\.zip$/i, "") : "Imported Project");
+        const description = (payload.get("description") as string) || "";
+
+        if (!file) {
+          throw new Error("No file provided in form data.");
+        }
+
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error || new Error("Failed to read archive file."));
+          reader.readAsDataURL(file);
+        });
+
+        const zipBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+        requestBody = JSON.stringify({ name, description, zipBase64 });
+      } else {
+        requestBody = JSON.stringify(payload);
+      }
+
       const res = await fetch("/api/projects/import", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: requestBody,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to import project.");
