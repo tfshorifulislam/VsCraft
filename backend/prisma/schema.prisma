@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String
+  passwordHash String
+  avatar       String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  projects     Project[]
+  settings     UserSettings?
+
+  @@index([email])
+}
+
+model UserSettings {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  theme         String   @default("vs-dark")
+  fontSize      Int      @default(14)
+  tabSize       Int      @default(2)
+  wordWrap      String   @default("on")
+  minimap       Boolean  @default(true)
+  autoSaveDelay Int      @default(1000)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Project {
+  id           String        @id @default(cuid())
+  name         String
+  description  String?
+  template     String        @default("react-ts")
+  starred      Boolean       @default(false)
+  isTrash      Boolean       @default(false)
+  trashedAt    DateTime?
+  activeFileId String?
+  openFileIds  String        @default("[]")
+  ownerId      String
+  owner        User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  files        ProjectFile[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([ownerId])
+  @@index([ownerId, isTrash])
+  @@index([ownerId, updatedAt])
+}
+
+model ProjectFile {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  path      String
+  content   String   @default("")
+  language  String   @default("plaintext")
+  isFolder  Boolean  @default(false)
+  parentId  String?
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, path])
+  @@index([projectId, parentId])
+}
+
