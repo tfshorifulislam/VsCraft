@@ -540,6 +540,7 @@ export default function ProjectsDashboard() {
         isOpen={isImportProjectOpen}
         onClose={() => setIsImportProjectOpen(false)}
         onImported={(id) => {
+          setIsImportProjectOpen(false);
           fetchCloudProjects();
           router.push(`/editor/${id}`);
         }}

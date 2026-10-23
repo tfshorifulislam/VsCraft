@@ -219,9 +219,16 @@ export const cloudApi = {
       const res = await fetch("/api/projects/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: requestBody,
       });
-      const data = await res.json();
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Import request failed with status ${res.status}`);
+      }
       if (!res.ok) throw new Error(data.error || "Failed to import project.");
       return data;
     },
@@ -231,12 +238,20 @@ export const cloudApi = {
       description?: string;
       files: import("@/types/editor").ProjectImportFile[];
     }): Promise<{ project: Project; detection: unknown }> {
+      console.log(`[cloudApi] Sending import request for "${payload.name}" (${payload.files.length} files)...`);
       const res = await fetch("/api/projects/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Import request failed with status ${res.status}`);
+      }
       if (!res.ok) throw new Error(data.error || "Failed to import project.");
       return data;
     },

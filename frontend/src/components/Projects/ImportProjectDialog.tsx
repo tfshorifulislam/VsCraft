@@ -271,21 +271,29 @@ export default function ImportProjectDialog({
             if (entry.kind === "file") {
               if (IGNORED_FILE_NAMES.has(entry.name.toLowerCase())) continue;
 
-              const file = await entry.getFile();
-              accumulatedBytes += file.size;
+              try {
+                const file = await entry.getFile();
+                accumulatedBytes += file.size;
 
-              const { content } = await readFileContent(file);
+                const { content } = await readFileContent(file);
 
-              collected.push({
-                name: entry.name,
-                path,
-                content,
-                isFolder: false,
-                size: file.size,
-                mimeType: file.type,
-              });
+                collected.push({
+                  name: entry.name,
+                  path,
+                  content,
+                  isFolder: false,
+                  size: file.size,
+                  mimeType: file.type,
+                });
+              } catch (fileErr) {
+                console.warn(`[Import] Skipping unreadable file "${path}":`, fileErr);
+              }
             } else if (entry.kind === "directory") {
-              await readDir(entry, path);
+              try {
+                await readDir(entry, path);
+              } catch (dirErr) {
+                console.warn(`[Import] Skipping unreadable folder "${path}":`, dirErr);
+              }
             }
           }
         }
@@ -373,16 +381,20 @@ export default function ImportProjectDialog({
 
       accumulatedBytes += file.size;
 
-      const { content } = await readFileContent(file);
+      try {
+        const { content } = await readFileContent(file);
 
-      collected.push({
-        name: file.name,
-        path: trimmedPath,
-        content,
-        isFolder: false,
-        size: file.size,
-        mimeType: file.type,
-      });
+        collected.push({
+          name: file.name,
+          path: trimmedPath,
+          content,
+          isFolder: false,
+          size: file.size,
+          mimeType: file.type,
+        });
+      } catch (fileErr) {
+        console.warn(`[Import] Skipping unreadable file "${trimmedPath}":`, fileErr);
+      }
     }
 
     if (collected.length === 0) {
@@ -468,14 +480,16 @@ export default function ImportProjectDialog({
 
       setSubmissionProgress("Writing workspace files & launching editor...");
       setIsSuccess(true);
+      setIsSubmitting(false);
 
       setTimeout(() => {
+        resetState();
+        onClose();
         if (onImported) {
           onImported(createdProjectId);
         } else {
           router.push(`/editor/${createdProjectId}`);
         }
-        handleClose();
       }, 500);
     } catch (err) {
       console.error("Import error:", err);
