@@ -17,7 +17,7 @@ import {
 import crypto from "crypto";
 
 const PROJECT_CARD_PREVIEW_CHARS = 1200;
-const MAX_INLINE_EDITOR_CONTENT_CHARS = 2 * 1024 * 1024;
+const MAX_INLINE_EDITOR_CONTENT_BYTES = 2 * 1024 * 1024;
 const EDITOR_CRITICAL_PATHS = [
   "package.json",
   "requirements.txt",
@@ -305,26 +305,24 @@ export async function getProjectById(
           isFolder: true,
           parentId: true,
           version: true,
-          createdAt: true,
-          updatedAt: true,
         },
       },
     },
   });
   if (!project) return null;
 
-  let totalChars = 0;
+  let totalBytes = 0;
   if (options.includeContent !== "full") {
-    const [size] = await prisma.$queryRaw<Array<{ chars: bigint }>>`
-      SELECT coalesce(sum(length(content)), 0) AS chars
+    const [size] = await prisma.$queryRaw<Array<{ bytes: bigint }>>`
+      SELECT coalesce(sum(octet_length(content)), 0) AS bytes
       FROM "ProjectFile"
       WHERE "projectId" = ${projectId} AND "isFolder" = false
     `;
-    totalChars = Number(size?.chars || 0);
+    totalBytes = Number(size?.bytes || 0);
   }
 
   const includeAll =
-    options.includeContent === "full" || totalChars <= MAX_INLINE_EDITOR_CONTENT_CHARS;
+    options.includeContent === "full" || totalBytes <= MAX_INLINE_EDITOR_CONTENT_BYTES;
   let contentIds: string[];
 
   if (includeAll) {
@@ -565,16 +563,21 @@ export async function updateProjectFileContent(
 
   const file = await prisma.projectFile.findFirst({
     where: { id: fileId, projectId },
+    select: { id: true, path: true, version: true },
   });
   if (!file) return { error: "File not found", status: 404 };
 
   if (typeof version === "number" && version !== file.version) {
+    const latest = await prisma.projectFile.findUnique({
+      where: { id: fileId },
+      select: { version: true, content: true },
+    });
     return {
       error: "Save conflict: this file was changed by another session. Reload it before saving again.",
       status: 409,
       conflict: true,
-      serverVersion: file.version,
-      serverContent: file.content,
+      serverVersion: latest?.version ?? file.version,
+      serverContent: latest?.content ?? "",
     };
   }
 
@@ -589,18 +592,33 @@ export async function updateProjectFileContent(
   });
 
   if (updateResult.count === 0) {
-    const latest = await prisma.projectFile.findUnique({ where: { id: fileId } });
+    const latest = await prisma.projectFile.findUnique({
+      where: { id: fileId },
+      select: { version: true, content: true },
+    });
     return {
       error: "Save conflict: this file was changed by another session. Reload it before saving again.",
       status: 409,
       conflict: true,
       serverVersion: latest?.version ?? file.version,
-      serverContent: latest?.content ?? file.content,
+      serverContent: latest?.content ?? "",
     };
   }
 
   const [updatedFile] = await prisma.$transaction([
-    prisma.projectFile.findUniqueOrThrow({ where: { id: fileId } }),
+    prisma.projectFile.findUniqueOrThrow({
+      where: { id: fileId },
+      select: {
+        id: true,
+        projectId: true,
+        name: true,
+        path: true,
+        language: true,
+        isFolder: true,
+        parentId: true,
+        version: true,
+      },
+    }),
     prisma.project.update({
       where: { id: projectId },
       data: { updatedAt: new Date() },
@@ -609,7 +627,7 @@ export async function updateProjectFileContent(
 
   // Synchronize saved content to physical workspace on disk
   try {
-    await writeProjectFileToDisk(projectId, updatedFile.path, updatedFile.content, false);
+    await writeProjectFileToDisk(projectId, file.path, content, false);
   } catch (err) {
     console.error("Failed to write updated file to disk:", err);
   }
@@ -630,6 +648,7 @@ export async function renameProjectFile(
 
   const file = await prisma.projectFile.findFirst({
     where: { id: fileId, projectId },
+    select: { id: true, path: true, isFolder: true },
   });
   if (!file) return null;
 
@@ -650,6 +669,7 @@ export async function renameProjectFile(
         projectId,
         path: { startsWith: oldPrefix },
       },
+      select: { id: true, path: true },
     });
 
     await prisma.$transaction([
@@ -690,7 +710,19 @@ export async function renameProjectFile(
     console.error("Failed to rename file on disk:", err)
   );
 
-  return prisma.projectFile.findUnique({ where: { id: fileId } });
+  return prisma.projectFile.findUnique({
+    where: { id: fileId },
+    select: {
+      id: true,
+      projectId: true,
+      name: true,
+      path: true,
+      language: true,
+      isFolder: true,
+      parentId: true,
+      version: true,
+    },
+  });
 }
 
 export async function deleteProjectFile(
@@ -705,6 +737,7 @@ export async function deleteProjectFile(
 
   const file = await prisma.projectFile.findFirst({
     where: { id: fileId, projectId },
+    select: { id: true, path: true, isFolder: true },
   });
   if (!file) return null;
 

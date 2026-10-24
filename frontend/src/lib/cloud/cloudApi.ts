@@ -5,6 +5,7 @@ import {
   ProjectCreationPayload,
   FrameworkInitOptions,
 } from "@/types/editor";
+import { fileContentCache, type CachedFileContent } from "@/lib/cache/fileContentCache";
 
 export interface CloudUser {
   id: string;
@@ -28,6 +29,12 @@ export interface SaveResult {
   serverContent?: string;
   error?: string;
 }
+
+export interface LoadedFileContent extends CachedFileContent {
+  id: string;
+}
+
+const pendingFileContent = new Map<string, Promise<LoadedFileContent>>();
 
 async function readJsonResponse(res: Response): Promise<Record<string, unknown>> {
   const raw = await res.text();
@@ -404,16 +411,35 @@ export const cloudApi = {
 
     async getContent(
       projectId: string,
-      fileId: string
-    ): Promise<Pick<ProjectFile, "id" | "name" | "path" | "content" | "version">> {
-      const res = await fetch(`/api/projects/${projectId}/files/${fileId}/content`, {
-        cache: "no-store",
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to load file content.");
+      fileId: string,
+      version?: number
+    ): Promise<LoadedFileContent> {
+      const cached = fileContentCache.get(projectId, fileId, version);
+      if (cached) return { id: fileId, ...cached };
+
+      const key = `${projectId}:${fileId}`;
+      const pending = pendingFileContent.get(key);
+      if (pending) return pending;
+
+      const request = (async () => {
+        const res = await fetch(`/api/projects/${projectId}/files/${fileId}/content`, {
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to load file content.");
+        }
+        const file = data.file as Pick<ProjectFile, "id" | "content" | "version">;
+        fileContentCache.set(projectId, fileId, file.content, file.version);
+        return { id: file.id, content: file.content, version: file.version };
+      })();
+
+      pendingFileContent.set(key, request);
+      try {
+        return await request;
+      } finally {
+        pendingFileContent.delete(key);
       }
-      return data.file;
     },
 
     async saveContent(
@@ -439,6 +465,7 @@ export const cloudApi = {
       if (!res.ok) {
         return { error: data.error || "Save failed." };
       }
+      fileContentCache.set(projectId, fileId, content, data.file?.version);
       return { file: data.file };
     },
 
@@ -458,6 +485,7 @@ export const cloudApi = {
         method: "DELETE",
       });
       if (!res.ok) throw new Error("Failed to delete file from cloud.");
+      fileContentCache.delete(projectId, fileId);
     },
 
     async upload(

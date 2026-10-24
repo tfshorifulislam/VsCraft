@@ -1,7 +1,14 @@
 import type * as Monaco from "monaco-editor";
 import { Project } from "@/types/editor";
+import { LANGUAGE_SERVICE_FILE_CHAR_LIMIT } from "@/lib/editor/largeFile";
+import {
+  isBinarySearchPath,
+  isDefaultIndexExcludedPath,
+} from "@/lib/search/workspaceSearch";
 
 let extraLibDisposables: Monaco.IDisposable[] = [];
+const MAX_LANGUAGE_SERVICE_MODELS = 300;
+const MAX_LANGUAGE_SERVICE_TOTAL_CHARS = 8 * 1024 * 1024;
 
 /**
  * Standard ambient TypeScript declarations for React, Next.js, Lucide, Radix, and utility libraries.
@@ -736,28 +743,89 @@ export function configureMonacoTypeScript(monaco: typeof Monaco, project: Projec
     extraLibDisposables.push(nextGlobalDisposable);
   }
 
-  // 7. Register every workspace file into Monaco's language service as an extraLib and Monaco Model
-  for (const file of project.files) {
-    if (file.isFolder) continue;
+  // 7. Register only loaded, reasonably sized source files. Lazy placeholders are
+  // empty strings, so registering them would both waste memory and hide exports.
+  const loadedFileIds = new Set(project.loadedFileIds || []);
+  const candidates = project.files
+    .filter((file) => {
+      if (file.isFolder || !file.content) return false;
+      if (!project.contentLazy && !loadedFileIds.has(file.id)) return true;
+      return loadedFileIds.has(file.id);
+    })
+    .filter((file) => !isDefaultIndexExcludedPath(file.path))
+    .filter((file) => !isBinarySearchPath(file.path))
+    .filter((file) => file.content.length <= LANGUAGE_SERVICE_FILE_CHAR_LIMIT)
+    .sort((a, b) => languageServicePriority(a.path) - languageServicePriority(b.path));
+
+  const candidateUris = new Set(
+    candidates.map((file) => monaco.Uri.parse(`file:///${file.path}`).toString())
+  );
+  const activeFile = project.files.find((file) => file.id === project.activeFileId);
+  const activeUri = activeFile
+    ? monaco.Uri.parse(`file:///${activeFile.path}`).toString()
+    : null;
+  const projectUris = new Set(
+    project.files.map((file) => monaco.Uri.parse(`file:///${file.path}`).toString())
+  );
+
+  for (const model of monaco.editor.getModels()) {
+    const uri = model.uri.toString();
+    if (
+      projectUris.has(uri) &&
+      !candidateUris.has(uri) &&
+      uri !== activeUri &&
+      model.uri.scheme === "file"
+    ) {
+      model.dispose();
+    }
+  }
+
+  let registeredChars = 0;
+  let registeredModels = 0;
+
+  for (const file of candidates) {
+    if (registeredModels >= MAX_LANGUAGE_SERVICE_MODELS) break;
+    if (registeredChars + file.content.length > MAX_LANGUAGE_SERVICE_TOTAL_CHARS) break;
 
     const fileUri = monaco.Uri.parse(`file:///${file.path}`);
 
-    // Register file content as extraLib so TypeScript worker can resolve exports across files
     try {
       const libDisposable = tsDefaults.addExtraLib(file.content, fileUri.toString());
       extraLibDisposables.push(libDisposable);
     } catch {
-      // extraLib may already be tracked
+      continue;
     }
 
-    // Ensure model exists in Monaco for language service cross-referencing
-    let model = monaco.editor.getModel(fileUri);
+    registeredChars += file.content.length;
+    registeredModels += 1;
+
+    const model = monaco.editor.getModel(fileUri);
     if (!model) {
       const ext = file.name.split(".").pop()?.toLowerCase();
-      const language = ext === "tsx" || ext === "ts" ? "typescript" : ext === "jsx" || ext === "js" ? "javascript" : ext === "json" ? "json" : ext === "css" ? "css" : ext === "html" ? "html" : "plaintext";
-      model = monaco.editor.createModel(file.content, language, fileUri);
+      const language =
+        ext === "tsx" || ext === "ts"
+          ? "typescript"
+          : ext === "jsx" || ext === "js"
+            ? "javascript"
+            : ext === "json"
+              ? "json"
+              : ext === "css"
+                ? "css"
+                : ext === "html"
+                  ? "html"
+                  : "plaintext";
+      monaco.editor.createModel(file.content, language, fileUri);
     }
   }
+}
+
+function languageServicePriority(path: string): number {
+  if (path === "tsconfig.json") return 0;
+  if (path === "package.json") return 1;
+  if (path.startsWith("src/")) return 2;
+  if (path.startsWith("app/")) return 3;
+  if (path.startsWith("lib/")) return 4;
+  return 5;
 }
 
 /**

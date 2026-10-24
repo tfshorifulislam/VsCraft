@@ -12,6 +12,7 @@ import {
   setupEmmetTabExpansion,
 } from "@/lib/monaco/tagCompletionService";
 import ImagePreviewer, { isImageFile } from "./ImagePreviewer";
+import { formatCharacterCount, isLargeFileContent } from "@/lib/editor/largeFile";
 
 // Dynamically import Editor to completely eliminate SSR issues
 const Editor = dynamic(() => import("@monaco-editor/react"), {
@@ -25,6 +26,107 @@ const Editor = dynamic(() => import("@monaco-editor/react"), {
     </div>
   ),
 });
+
+function buildEditorOptions(
+  settings: EditorSettings,
+  isLargeFile: boolean
+): Monaco.editor.IStandaloneEditorConstructionOptions {
+  const effectiveFontFamily = settings.fontFamily || '"Consolas", "Courier New", monospace';
+  const effectiveFontSize = settings.fontSize || 14;
+  const effectiveLineHeight = Math.round(effectiveFontSize * (settings.lineHeight || 1.5));
+
+  const base: Monaco.editor.IStandaloneEditorConstructionOptions = {
+    automaticLayout: true,
+    fontFamily: effectiveFontFamily,
+    fontSize: effectiveFontSize,
+    lineHeight: effectiveLineHeight,
+    letterSpacing: 0,
+    fontLigatures: false,
+    wordWrap: settings.wordWrap,
+    minimap: { enabled: settings.minimap },
+    tabSize: settings.tabSize,
+    lineNumbers: "on",
+    padding: { top: 8, bottom: 8 },
+    smoothScrolling: true,
+    cursorBlinking: "smooth",
+    cursorSmoothCaretAnimation: "on",
+    formatOnPaste: true,
+    formatOnType: true,
+    renderWhitespace: "selection",
+    scrollBeyondLastLine: false,
+    tabCompletion: "on",
+    snippetSuggestions: "top",
+    suggest: {
+      showSnippets: true,
+      snippetsPreventQuickSuggestions: false,
+      localityBonus: true,
+      shareSuggestSelections: true,
+      showIcons: true,
+    },
+    quickSuggestions: {
+      other: true,
+      comments: true,
+      strings: true,
+    },
+    quickSuggestionsDelay: 10,
+    acceptSuggestionOnEnter: "on",
+    suggestSelection: "first",
+    parameterHints: {
+      enabled: true,
+      cycle: true,
+    },
+    hover: {
+      delay: 300,
+    },
+    bracketPairColorization: {
+      enabled: true,
+    },
+    matchBrackets: "always",
+    autoClosingBrackets: "always",
+    autoClosingQuotes: "always",
+    autoClosingDelete: "always",
+    autoClosingOvertype: "always",
+    autoIndent: "full",
+    guides: {
+      bracketPairs: true,
+      indentation: true,
+    },
+    folding: true,
+    links: true,
+    largeFileOptimizations: true,
+  };
+
+  if (!isLargeFile) return base;
+
+  return {
+    ...base,
+    wordWrap: "off",
+    minimap: { enabled: false },
+    smoothScrolling: false,
+    cursorSmoothCaretAnimation: "off",
+    formatOnPaste: false,
+    formatOnType: false,
+    renderWhitespace: "none",
+    tabCompletion: "off",
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    acceptSuggestionOnEnter: "off",
+    parameterHints: { enabled: false },
+    hover: { enabled: "off" },
+    bracketPairColorization: { enabled: false },
+    matchBrackets: "never",
+    guides: { bracketPairs: false, indentation: false },
+    folding: false,
+    links: false,
+    colorDecorators: false,
+    codeLens: false,
+    occurrencesHighlight: "off",
+    selectionHighlight: false,
+    stickyScroll: { enabled: false },
+    renderValidationDecorations: "off",
+    maxTokenizationLineLength: 5_000,
+  };
+}
 
 interface MonacoEditorProps {
   activeFile: ProjectFile | null;
@@ -51,6 +153,7 @@ function MonacoEditorComponent({
   const activeFileIdRef = useRef<string | null>(activeFile?.id || null);
   const lastProjectFilesRef = useRef<string>("");
   const lastKnownContentRef = useRef<string>(activeFile?.content || "");
+  const isLargeFile = activeFile ? isLargeFileContent(activeFile.content) : false;
 
   const handleEditorChange = (value: string | undefined) => {
     const val = value || "";
@@ -107,67 +210,7 @@ function MonacoEditorComponent({
       }
     });
 
-    const effectiveFontFamily = settings.fontFamily || '"Consolas", "Courier New", monospace';
-    const effectiveFontSize = settings.fontSize || 14;
-    const effectiveLineHeight = Math.round(effectiveFontSize * (settings.lineHeight || 1.5));
-
-    // Configure editor settings matching VS Code experience
-    editor.updateOptions({
-      fontFamily: effectiveFontFamily,
-      fontSize: effectiveFontSize,
-      lineHeight: effectiveLineHeight,
-      letterSpacing: 0,
-      fontLigatures: false,
-      wordWrap: settings.wordWrap,
-      minimap: { enabled: settings.minimap },
-      tabSize: settings.tabSize,
-      smoothScrolling: true,
-      cursorBlinking: "smooth",
-      cursorSmoothCaretAnimation: "on",
-      formatOnPaste: true,
-      formatOnType: true,
-      renderWhitespace: "selection",
-      scrollBeyondLastLine: false,
-      tabCompletion: "on",
-      snippetSuggestions: "top",
-      suggest: {
-        showSnippets: true,
-        snippetsPreventQuickSuggestions: false,
-        localityBonus: true,
-        shareSuggestSelections: true,
-        showIcons: true,
-      },
-      quickSuggestions: {
-        other: true,
-        comments: true,
-        strings: true,
-      },
-      quickSuggestionsDelay: 10,
-      acceptSuggestionOnEnter: "on",
-      suggestSelection: "first",
-      parameterHints: {
-        enabled: true,
-        cycle: true,
-      },
-      hover: {
-        delay: 300,
-      },
-      bracketPairColorization: {
-        enabled: true,
-      },
-      matchBrackets: "always",
-      autoClosingBrackets: "always",
-      autoClosingQuotes: "always",
-      autoClosingDelete: "always",
-      autoClosingOvertype: "always",
-      autoIndent: "full",
-      guides: {
-        bracketPairs: true,
-        indentation: true,
-      },
-      folding: true,
-      links: true,
-    });
+    editor.updateOptions(buildEditorOptions(settings, isLargeFile));
   };
 
   // Cleanup disposables on unmount
@@ -184,57 +227,38 @@ function MonacoEditorComponent({
     };
   }, []);
 
-  // Update editor options whenever settings change
   useEffect(() => {
-    if (editorRef.current) {
-      const effectiveFontFamily = settings.fontFamily || '"Consolas", "Courier New", monospace';
-      const effectiveFontSize = settings.fontSize || 14;
-      const effectiveLineHeight = Math.round(effectiveFontSize * (settings.lineHeight || 1.5));
-
-      editorRef.current.updateOptions({
-        fontFamily: effectiveFontFamily,
-        fontSize: effectiveFontSize,
-        lineHeight: effectiveLineHeight,
-        letterSpacing: 0,
-        fontLigatures: false,
-        wordWrap: settings.wordWrap,
-        minimap: { enabled: settings.minimap },
-        tabSize: settings.tabSize,
-      });
-    }
-  }, [settings]);
+    editorRef.current?.updateOptions(buildEditorOptions(settings, isLargeFile));
+  }, [settings, isLargeFile]);
 
   // Preserve and restore view state across file transitions
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor || !activeFile) return;
+    if (activeFileIdRef.current === activeFile.id) return;
 
-    if (activeFileIdRef.current && activeFileIdRef.current !== activeFile.id) {
-      // Save outgoing file view state (cursor, scroll, selection)
+    const previousFileId = activeFileIdRef.current;
+    if (previousFileId) {
       const currentVs = editor.saveViewState();
       if (currentVs) {
-        viewStatesRef.current.set(activeFileIdRef.current, currentVs);
+        viewStatesRef.current.set(previousFileId, currentVs);
       }
-      activeFileIdRef.current = activeFile.id;
-      lastKnownContentRef.current = activeFile.content;
-
-      // Restore incoming file view state if cached
-      const targetVs = viewStatesRef.current.get(activeFile.id);
-      if (targetVs) {
-        editor.restoreViewState(targetVs);
-      }
-    } else {
-      activeFileIdRef.current = activeFile.id;
-      lastKnownContentRef.current = activeFile.content;
     }
-  }, [activeFile?.id]);
+
+    activeFileIdRef.current = activeFile.id;
+    lastKnownContentRef.current = activeFile.content;
+
+    const targetVs = viewStatesRef.current.get(activeFile.id);
+    if (targetVs) {
+      editor.restoreViewState(targetVs);
+    }
+  }, [activeFile]);
 
   // Handle genuine external updates (e.g. AI Assistant diff, file revert)
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor || !activeFile) return;
 
-    // If activeFile.content changed externally and differs from the current buffer
     if (activeFile.content !== lastKnownContentRef.current) {
       lastKnownContentRef.current = activeFile.content;
       const model = editor.getModel();
@@ -250,12 +274,20 @@ function MonacoEditorComponent({
         }
       }
     }
-  }, [activeFile?.content]);
+  }, [activeFile]);
 
   // Synchronize TypeScript language service and workspace models ONLY when files list changes
   useEffect(() => {
     if (!monacoRef.current || !project) return;
-    const fileListSig = project.files.map((f) => `${f.id}:${f.path}:${f.isFolder ? "d" : "f"}`).join(";");
+    const loadedIds = new Set(project.loadedFileIds || []);
+    const fileListSig = project.files
+      .map(
+        (f) =>
+          `${f.id}:${f.path}:${f.isFolder ? "d" : "f"}:${
+            project.contentLazy && !f.isFolder ? (loadedIds.has(f.id) ? "l" : "u") : "a"
+          }`
+      )
+      .join(";");
     if (fileListSig === lastProjectFilesRef.current) return;
     lastProjectFilesRef.current = fileListSig;
 
@@ -310,77 +342,25 @@ function MonacoEditorComponent({
   const fileUriString = `file://${normalizedPath}`;
 
   return (
-    <div className="h-full w-full overflow-hidden bg-[#1e1e1e]">
+    <div className="relative h-full w-full overflow-hidden bg-[#1e1e1e]">
       <Editor
         height="100%"
         width="100%"
         theme={settings.theme === "vs-dark" ? "vs-dark" : "light"}
-        language={getLanguage(activeFile)}
+        language={isLargeFile ? "plaintext" : getLanguage(activeFile)}
         path={fileUriString}
         defaultValue={activeFile.content}
         onChange={handleEditorChange}
         beforeMount={handleBeforeMount}
         onMount={handleEditorMount}
-        options={{
-          automaticLayout: true,
-          fontFamily: settings.fontFamily || '"Consolas", "Courier New", monospace',
-          fontSize: settings.fontSize || 14,
-          lineHeight: Math.round((settings.fontSize || 14) * (settings.lineHeight || 1.5)),
-          letterSpacing: 0,
-          fontLigatures: false,
-          wordWrap: settings.wordWrap,
-          minimap: { enabled: settings.minimap },
-          tabSize: settings.tabSize,
-          lineNumbers: "on",
-          padding: { top: 8, bottom: 8 },
-          smoothScrolling: true,
-          cursorBlinking: "smooth",
-          cursorSmoothCaretAnimation: "on",
-          formatOnPaste: true,
-          formatOnType: true,
-          renderWhitespace: "selection",
-          scrollBeyondLastLine: false,
-          tabCompletion: "on",
-          snippetSuggestions: "top",
-          suggest: {
-            showSnippets: true,
-            snippetsPreventQuickSuggestions: false,
-            localityBonus: true,
-            shareSuggestSelections: true,
-            showIcons: true,
-          },
-          quickSuggestions: {
-            other: true,
-            comments: true,
-            strings: true,
-          },
-          quickSuggestionsDelay: 10,
-          acceptSuggestionOnEnter: "on",
-          suggestSelection: "first",
-          parameterHints: {
-            enabled: true,
-            cycle: true,
-          },
-          hover: {
-            delay: 300,
-          },
-          bracketPairColorization: {
-            enabled: true,
-          },
-          matchBrackets: "always",
-          autoClosingBrackets: "always",
-          autoClosingQuotes: "always",
-          autoClosingDelete: "always",
-          autoClosingOvertype: "always",
-          autoIndent: "full",
-          guides: {
-            bracketPairs: true,
-            indentation: true,
-          },
-          folding: true,
-          links: true,
-        }}
+        options={buildEditorOptions(settings, isLargeFile)}
       />
+      {isLargeFile && (
+        <div className="pointer-events-none absolute right-2 top-2 z-10 rounded border border-amber-500/40 bg-[#2a2417]/95 px-2 py-1 text-[10px] font-mono text-amber-200 shadow-lg">
+          Large file mode · {formatCharacterCount(activeFile.content.length)} · expensive syntax
+          features reduced
+        </div>
+      )}
     </div>
   );
 }

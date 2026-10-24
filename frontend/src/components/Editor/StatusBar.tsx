@@ -12,7 +12,7 @@ interface StatusBarProps {
   saveStatus?: "saved" | "saving" | "unsaved" | "error";
 }
 
-export default function StatusBar({
+function StatusBar({
   activeFile,
   cursorPos,
   onToggleTerminal,
@@ -129,3 +129,5 @@ export default function StatusBar({
     </footer>
   );
 }
+
+export default React.memo(StatusBar);

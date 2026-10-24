@@ -18,7 +18,7 @@ interface EditorTabsProps {
   onCloseTab: (fileId: string, e: MouseEvent) => void;
 }
 
-export default function EditorTabs({
+function EditorTabs({
   openFiles,
   activeFileId,
   unsavedFiles,
@@ -89,3 +89,5 @@ export default function EditorTabs({
     </div>
   );
 }
+
+export default React.memo(EditorTabs);

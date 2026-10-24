@@ -533,13 +533,75 @@ async function testEditorOpenSave(projectId) {
     content,
     version: file.version,
   });
-  assert(saved.file.content === content, "editor save persists content");
+  assert(
+    saved.file.content === undefined,
+    "editor save response does not echo the full file content"
+  );
   assert(saved.file.version === file.version + 1, "editor save increments version");
+  const contentResult = await apiOk(
+    "GET",
+    `/api/projects/${projectId}/files/${file.id}/content`
+  );
+  assert(contentResult.file.content === content, "editor save persists content");
 
   const reopened = await apiOk("GET", `/api/projects/${projectId}`);
   const reopenedFile = reopened.project.files.find((candidate) => candidate.id === file.id);
   assert(reopenedFile?.content === content, "reopened project returns saved content");
   return { file: file.path, version: reopenedFile.version };
+}
+
+async function testLargeFileIntegrity(projectId) {
+  const lines = [];
+  let length = 0;
+  let lineNumber = 0;
+  while (length < 4 * 1024 * 1024) {
+    const line = `export const row_${lineNumber} = "large-file-integrity-${lineNumber}";\n`;
+    lines.push(line);
+    length += line.length;
+    lineNumber += 1;
+  }
+  const content = lines.join("");
+  const created = await apiOk("POST", `/api/projects/${projectId}/files`, {
+    name: "large-file-integrity.ts",
+    isFolder: false,
+    parentId: null,
+    content,
+  });
+  assert(created.file.content.length === content.length, "large file create preserves content length");
+  assert(created.file.version >= 1, "large file create assigns version");
+
+  const editedContent = content.replace("row_0", "row_x");
+  assert(editedContent.length === content.length, "large file edit only changes marker bytes");
+  const saveResult = await api("PATCH", `/api/projects/${projectId}/files/${created.file.id}`, {
+    content: editedContent,
+    version: created.file.version,
+  });
+  assert(saveResult.res.status === 200, `large file save returns 200 (got ${saveResult.res.status})`);
+  assert(
+    Buffer.byteLength(saveResult.raw) < 16 * 1024,
+    `large file save response stays metadata-sized (${Buffer.byteLength(saveResult.raw)} bytes)`
+  );
+
+  const loaded = await apiOk(
+    "GET",
+    `/api/projects/${projectId}/files/${created.file.id}/content`
+  );
+  const expectedHash = crypto.createHash("sha256").update(editedContent).digest("hex");
+  const loadedHash = crypto.createHash("sha256").update(loaded.file.content).digest("hex");
+  assert(loaded.file.content.length === editedContent.length, "large file reload preserves length");
+  assert(loadedHash === expectedHash, "large file reload preserves exact bytes");
+
+  const diskContent = await fsp.readFile(
+    path.join(WORKSPACES_DIR, projectId, "large-file-integrity.ts"),
+    "utf8"
+  );
+  assert(
+    crypto.createHash("sha256").update(diskContent).digest("hex") === expectedHash,
+    "large file disk copy preserves exact bytes"
+  );
+
+  await apiOk("DELETE", `/api/projects/${projectId}/files/${created.file.id}`);
+  return { chars: editedContent.length, saveResponseBytes: Buffer.byteLength(saveResult.raw) };
 }
 
 async function testProjectsList() {
@@ -622,11 +684,16 @@ async function run() {
     const frontendImport = await importTree(frontendRoot, "Frontend Fixture");
     await verifyProject(frontendImport);
     const editorResult = await testEditorOpenSave(frontendImport.projectId);
+    const largeFileResult = await testLargeFileIntegrity(frontendImport.projectId);
     await deleteProject(frontendImport.projectId);
     results.push(["frontend-only", `${frontendImport.selection.files.length} files`]);
     results.push([
       "editor open/save/reopen",
       `${editorResult.file} v${editorResult.version}`,
+    ]);
+    results.push([
+      "large file exact save/reload",
+      `${(largeFileResult.chars / (1024 * 1024)).toFixed(2)} MB, save response ${largeFileResult.saveResponseBytes} bytes`,
     ]);
 
     const backendRoot = path.join(fixtureRoot, "backend-only");

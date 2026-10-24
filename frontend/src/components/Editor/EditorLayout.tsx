@@ -1,22 +1,28 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef, type MouseEvent } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type MouseEvent,
+} from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ActivityBar from "./ActivityBar";
 import FileExplorer from "./FileExplorer";
 import EditorTabs from "./EditorTabs";
 import MonacoEditorComponent from "./MonacoEditor";
-import TerminalPanel from "./TerminalPanel";
-import PreviewPanel from "./PreviewPanel";
-import AIAssistantPanel from "./AIAssistantPanel";
 import StatusBar from "./StatusBar";
 import CommandPalette, { CommandItem } from "./CommandPalette";
 import GitPanel from "./GitPanel";
 import DebugPanel from "./DebugPanel";
 import ExtensionsPanel from "./ExtensionsPanel";
-import InitializeProjectDialog from "./InitializeProjectDialog";
+import WorkspaceSearchPanel from "./WorkspaceSearchPanel";
 import { cloudApi } from "@/lib/cloud/cloudApi";
+import { fileContentCache } from "@/lib/cache/fileContentCache";
 import {
   Project,
   ProjectFile,
@@ -32,7 +38,6 @@ import {
 } from "@/lib/storage/projectStorage";
 import {
   Search,
-  FileCode,
   FolderGit2,
   Download,
   Plus,
@@ -49,6 +54,23 @@ import {
   ChevronRight,
   ExternalLink,
 } from "lucide-react";
+
+const TerminalPanel = dynamic(() => import("./TerminalPanel"), {
+  ssr: false,
+  loading: () => null,
+});
+const PreviewPanel = dynamic(() => import("./PreviewPanel"), {
+  ssr: false,
+  loading: () => null,
+});
+const AIAssistantPanel = dynamic(() => import("./AIAssistantPanel"), {
+  ssr: false,
+  loading: () => null,
+});
+const InitializeProjectDialog = dynamic(() => import("./InitializeProjectDialog"), {
+  ssr: false,
+  loading: () => null,
+});
 
 let layoutCounter = 1000;
 function getEditorUniqueId(prefix: string): string {
@@ -93,7 +115,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const [settings, setSettings] = useState<EditorSettings>(() => loadEditorSettings());
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 });
   const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [hasOpenedTerminal, setHasOpenedTerminal] = useState(false);
 
   // Fetch full cloud project when initialProjectId changes
   useEffect(() => {
@@ -152,10 +174,20 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
             cloudProj.files.filter((file) => !file.isFolder).map((file) => file.id)
         );
 
+        for (const file of cloudProj.files) {
+          if (file.isFolder || !loadedFileIdsRef.current.has(file.id)) continue;
+          fileContentCache.set(cloudProj.id, file.id, file.content, file.version);
+        }
+
         let projectFiles = cloudProj.files;
         if (activeId && !loadedFileIdsRef.current.has(activeId)) {
           try {
-            const loaded = await cloudApi.files.getContent(cloudProj.id, activeId);
+            const activeFileVersion = cloudProj.files.find((file) => file.id === activeId)?.version;
+            const loaded = await cloudApi.files.getContent(
+              cloudProj.id,
+              activeId,
+              activeFileVersion
+            );
             loadedFileIdsRef.current.add(activeId);
             projectFiles = projectFiles.map((file) =>
               file.id === activeId
@@ -172,6 +204,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           files: projectFiles,
           activeFileId: activeId,
           openFileIds: validOpenIds,
+          loadedFileIds: [...loadedFileIdsRef.current],
         });
 
         // Also load cloud projects list for project switcher modal
@@ -216,11 +249,22 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [saveStatus]);
 
-  // Active file helper
-  const activeFile = activeProject?.files.find((f) => f.id === activeProject.activeFileId) || null;
-  const openFiles = (activeProject?.openFileIds || [])
-    .map((id) => activeProject?.files.find((f) => f.id === id))
-    .filter((f): f is ProjectFile => !!f && !f.isFolder);
+  const filesById = useMemo(() => {
+    const map = new Map<string, ProjectFile>();
+    for (const file of activeProject?.files || []) map.set(file.id, file);
+    return map;
+  }, [activeProject?.files]);
+
+  const activeFile =
+    (activeProject?.activeFileId && filesById.get(activeProject.activeFileId)) || null;
+
+  const openFiles = useMemo(
+    () =>
+      (activeProject?.openFileIds || [])
+        .map((id) => filesById.get(id))
+        .filter((file): file is ProjectFile => !!file && !file.isFolder),
+    [activeProject?.openFileIds, filesById]
+  );
 
   // Persist the open tabs and active file so imported projects reopen where the
   // user left off. The first render after loading is skipped to avoid a write.
@@ -352,9 +396,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       const file = activeProject.files.find((f) => f.id === fileId);
       if (!file || file.isFolder) return;
 
-      if (activeProject.contentLazy && !loadedFileIdsRef.current.has(fileId)) {
+      if (!loadedFileIdsRef.current.has(fileId)) {
         try {
-          const loaded = await cloudApi.files.getContent(activeProject.id, fileId);
+          const loaded = await cloudApi.files.getContent(activeProject.id, fileId, file.version);
           loadedFileIdsRef.current.add(fileId);
           setActiveProject((prev) => {
             if (!prev) return null;
@@ -369,6 +413,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
                     }
                   : candidate
               ),
+              loadedFileIds: prev.loadedFileIds
+                ? [...new Set([...prev.loadedFileIds, fileId])]
+                : prev.loadedFileIds,
             };
           });
         } catch (err) {
@@ -422,9 +469,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
 
     // If tab being closed has unsaved changes, flush save
     const closingFile = activeProject.files.find((f) => f.id === fileId);
+    const shouldEvict = !!closingFile && !unsavedFiles[fileId];
     if (closingFile && unsavedFiles[fileId]) {
       const latest = inMemoryFileContentsRef.current.get(fileId) ?? closingFile.content;
       performCloudSave(fileId, latest);
+    }
+    if (closingFile && shouldEvict) {
+      fileContentCache.set(activeProject.id, fileId, closingFile.content, closingFile.version);
+      loadedFileIdsRef.current.delete(fileId);
     }
     inMemoryFileContentsRef.current.delete(fileId);
 
@@ -445,6 +497,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       if (!prev) return null;
       return {
         ...prev,
+        files: shouldEvict
+          ? prev.files.map((file) =>
+              file.id === fileId ? { ...file, content: "" } : file
+            )
+          : prev.files,
+        loadedFileIds: shouldEvict
+          ? prev.loadedFileIds?.filter((id) => id !== fileId)
+          : prev.loadedFileIds,
         activeFileId: nextActive,
         openFileIds: nextOpen,
         updatedAt: getTimestamp(),
@@ -464,7 +524,15 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       });
 
       if (serverFile) {
-        if (!serverFile.isFolder) loadedFileIdsRef.current.add(serverFile.id);
+        if (!serverFile.isFolder) {
+          loadedFileIdsRef.current.add(serverFile.id);
+          fileContentCache.set(
+            activeProject.id,
+            serverFile.id,
+            serverFile.content,
+            serverFile.version
+          );
+        }
         setActiveProject((prev) => {
           if (!prev) return null;
           const nextFiles = [...prev.files, serverFile];
@@ -474,6 +542,10 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
             files: nextFiles,
             openFileIds: nextOpen,
             activeFileId: isFolder ? prev.activeFileId : serverFile.id,
+            loadedFileIds:
+              isFolder || !prev.loadedFileIds
+                ? prev.loadedFileIds
+                : [...new Set([...prev.loadedFileIds, serverFile.id])],
             updatedAt: getTimestamp(),
           };
         });
@@ -502,7 +574,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           if (!prev) return null;
           return {
             ...prev,
-            files: prev.files.map((f) => (f.id === fileId ? updated : f)),
+            files: prev.files.map((f) =>
+              f.id === fileId ? { ...f, ...updated, content: f.content } : f
+            ),
             updatedAt: getTimestamp(),
           };
         });
@@ -530,6 +604,11 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       };
       findChildren(fileId);
 
+      for (const id of toDeleteIds) {
+        fileContentCache.delete(activeProject.id, id);
+        loadedFileIdsRef.current.delete(id);
+      }
+
       setActiveProject((prev) => {
         if (!prev) return null;
         const nextFiles = prev.files.filter((f) => !toDeleteIds.has(f.id));
@@ -543,6 +622,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           files: nextFiles,
           openFileIds: nextOpen,
           activeFileId: nextActive,
+          loadedFileIds: prev.loadedFileIds?.filter((id) => !toDeleteIds.has(id)),
           updatedAt: getTimestamp(),
         };
       });
@@ -577,7 +657,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
 
       if (uploadedFiles && uploadedFiles.length > 0) {
         for (const uploaded of uploadedFiles) {
-          if (!uploaded.isFolder) loadedFileIdsRef.current.add(uploaded.id);
+          if (uploaded.isFolder) continue;
+          loadedFileIdsRef.current.add(uploaded.id);
+          fileContentCache.set(
+            activeProject.id,
+            uploaded.id,
+            uploaded.content,
+            uploaded.version
+          );
         }
         setActiveProject((prev) => {
           if (!prev) return null;
@@ -592,11 +679,17 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
               ? [...prev.openFileIds, first.id]
               : prev.openFileIds;
 
+          const uploadedIds = uploadedFiles
+            .filter((file) => !file.isFolder)
+            .map((file) => file.id);
           return {
             ...prev,
             files: nextFiles,
             openFileIds: nextOpen,
             activeFileId: first && !first.isFolder ? first.id : prev.activeFileId,
+            loadedFileIds: prev.loadedFileIds
+              ? [...new Set([...prev.loadedFileIds, ...uploadedIds])]
+              : prev.loadedFileIds,
             updatedAt: getTimestamp(),
           };
         });
@@ -668,6 +761,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   }, []);
 
   const handleToggleTerminal = useCallback(() => {
+    setHasOpenedTerminal(true);
     setIsTerminalOpen((prev) => !prev);
   }, []);
 
@@ -680,8 +774,13 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   }, []);
 
   const handleFilesSynced = useCallback((updatedFiles: ProjectFile[]) => {
+    const projectId = activeProject?.id;
     for (const file of updatedFiles) {
-      if (!file.isFolder) loadedFileIdsRef.current.add(file.id);
+      if (file.isFolder) continue;
+      loadedFileIdsRef.current.add(file.id);
+      if (projectId) {
+        fileContentCache.set(projectId, file.id, file.content, file.version);
+      }
     }
     setActiveProject((prev) => {
       if (!prev) return null;
@@ -697,13 +796,17 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         }
         return newFile;
       });
+      const syncedIds = updatedFiles.filter((file) => !file.isFolder).map((file) => file.id);
       return {
         ...prev,
         files: merged,
+        loadedFileIds: prev.loadedFileIds
+          ? [...new Set([...prev.loadedFileIds, ...syncedIds])]
+          : prev.loadedFileIds,
         updatedAt: getTimestamp(),
       };
     });
-  }, []);
+  }, [activeProject?.id]);
 
   const handleRefreshWorkspaceFiles = useCallback(async () => {
     if (!activeProject?.id) return;
@@ -768,13 +871,13 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         setActiveSidebarView((prev) => (prev ? null : "explorer"));
       } else if (isCmdOrCtrl && e.key === "`") {
         e.preventDefault();
-        setIsTerminalOpen((prev) => !prev);
+        handleToggleTerminal();
       }
     };
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [handleSaveActiveFile, handleRunPreview]);
+  }, [handleSaveActiveFile, handleRunPreview, handleToggleTerminal]);
 
   // Command Palette Items
   const commandList: CommandItem[] = [
@@ -819,7 +922,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       category: "View",
       shortcut: "Ctrl+`",
       icon: <TerminalIcon className="w-4 h-4 text-amber-400" />,
-      action: () => setIsTerminalOpen((prev) => !prev),
+      action: handleToggleTerminal,
     },
     {
       id: "cmd-initialize-framework",
@@ -1032,47 +1135,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
             )}
 
             {activeSidebarView === "search" && (
-              <div className="flex-1 flex flex-col p-3 text-xs">
-                <span className="font-semibold text-neutral-400 uppercase tracking-wider mb-2">
-                  Search in Workspace
-                </span>
-                <div className="relative mb-3">
-                  <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-2.5" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search text in project files..."
-                    className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded pl-8 pr-2.5 py-1.5 text-white outline-none focus:border-[var(--color-primary)] font-mono text-xs"
-                  />
-                </div>
-                <div className="flex-1 overflow-y-auto space-y-1">
-                  {searchQuery.trim() === "" ? (
-                    <div className="text-neutral-500 italic p-2">Type to search workspace files...</div>
-                  ) : (
-                    activeProject.files
-                      .filter(
-                        (f) =>
-                          !f.isFolder &&
-                          (f.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            f.content.toLowerCase().includes(searchQuery.toLowerCase()))
-                      )
-                      .map((f) => (
-                        <button
-                          key={f.id}
-                          type="button"
-                          onClick={() => handleSelectFile(f.id)}
-                          className="w-full text-left p-2 rounded hover:bg-[#2a2d2e] flex flex-col gap-0.5 transition cursor-pointer"
-                        >
-                          <span className="font-medium text-white flex items-center gap-1.5">
-                            <FileCode className="w-3.5 h-3.5 text-blue-400" />
-                            {f.path}
-                          </span>
-                        </button>
-                      ))
-                  )}
-                </div>
-              </div>
+              <WorkspaceSearchPanel project={activeProject} onSelectFile={handleSelectFile} />
             )}
 
             {activeSidebarView === "git" && (
@@ -1098,6 +1161,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
               <DebugPanel
                 project={activeProject}
                 onExecuteCommand={() => {
+                  setHasOpenedTerminal(true);
                   setIsTerminalOpen(true);
                   setTerminalTab("terminal");
                 }}
@@ -1182,16 +1246,18 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           </div>
 
           {/* Bottom Integrated Terminal & Console Panel */}
-          <TerminalPanel
-            isOpen={isTerminalOpen}
-            onToggle={handleCloseTerminal}
-            activeTab={terminalTab}
-            onSelectTab={handleSelectTerminalTab}
-            consoleMessages={consoleMessages}
-            onClearConsole={handleClearConsole}
-            project={activeProject}
-            onFilesSynced={handleFilesSynced}
-          />
+          {(isTerminalOpen || hasOpenedTerminal) && (
+            <TerminalPanel
+              isOpen={isTerminalOpen}
+              onToggle={handleCloseTerminal}
+              activeTab={terminalTab}
+              onSelectTab={handleSelectTerminalTab}
+              consoleMessages={consoleMessages}
+              onClearConsole={handleClearConsole}
+              project={activeProject}
+              onFilesSynced={handleFilesSynced}
+            />
+          )}
         </main>
 
         {/* Right Side: Live Web Preview Panel */}
