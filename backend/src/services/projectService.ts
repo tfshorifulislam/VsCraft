@@ -192,28 +192,6 @@ export async function createCloudProject(
   }, { maxWait: 10000, timeout: 30000 });
 }
 
-export async function seedStarterProjectsForUser(userId: string) {
-  const existingCount = await prisma.project.count({
-    where: { ownerId: userId },
-  });
-
-  if (existingCount > 0) return;
-
-  await createCloudProject(
-    userId,
-    "react-ts",
-    "Interactive React App",
-    "State counter and interactive task management with live React preview."
-  );
-
-  await createCloudProject(
-    userId,
-    "vanilla-web",
-    "Modern Web Dashboard",
-    "HTML5, responsive CSS grid, and interactive JavaScript widgets."
-  );
-}
-
 export async function getUserProjects(userId: string, category: "all" | "recent" | "starred" | "trash" = "all") {
   const whereClause: {
     ownerId: string;

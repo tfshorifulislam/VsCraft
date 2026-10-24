@@ -3,7 +3,6 @@ import prisma from "../db/prisma";
 import { hashPassword, verifyPassword } from "../auth/passwords";
 import { signSessionToken } from "../auth/jwt";
 import { SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS, getSessionUser } from "../auth/session";
-import { seedStarterProjectsForUser } from "../services/projectService";
 
 export const authController = {
   async signup(req: Request, res: Response) {
@@ -54,8 +53,6 @@ export const authController = {
           createdAt: true,
         },
       });
-
-      await seedStarterProjectsForUser(user.id);
 
       const token = await signSessionToken({
         userId: user.id,

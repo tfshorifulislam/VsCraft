@@ -33,10 +33,19 @@ import { useRouter } from "next/navigation";
 export default function ProjectsDashboard() {
   const router = useRouter();
   const { user, isLoading: isAuthLoading } = useAuth();
+  const userId = user?.id ?? null;
 
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsOwnerId, setProjectsOwnerId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const visibleProjects = useMemo(
+    () => (projectsOwnerId === userId ? projects : []),
+    [projects, projectsOwnerId, userId]
+  );
+  const isProjectsLoading = isLoading || projectsOwnerId !== userId;
 
   const [currentCategory, setCurrentCategory] = useState<DashboardViewCategory>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -53,15 +62,32 @@ export default function ProjectsDashboard() {
   // Rename modal state
   const [renamingProject, setRenamingProject] = useState<{ id: string; name: string } | null>(null);
 
-  const fetchCloudProjects = useCallback(() => {
+  const requestProjectReload = useCallback(() => {
     setIsLoading(true);
-    setLoadError(null);
+    setReloadToken((token) => token + 1);
+  }, []);
+
+  useEffect(() => {
+    if (isAuthLoading) return;
+
+    if (!userId) {
+      router.push("/login?from=/projects");
+      return;
+    }
+
+    const controller = new AbortController();
     cloudApi.projects
-      .list("all")
+      .list("all", controller.signal)
       .then((data) => {
+        if (controller.signal.aborted) return;
         setProjects(data);
+        setProjectsOwnerId(userId);
+        setLoadError(null);
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setProjects([]);
+        setProjectsOwnerId(userId);
         if (err instanceof Error && err.message === "UNAUTHORIZED") {
           router.push("/login?from=/projects");
           return;
@@ -69,45 +95,20 @@ export default function ProjectsDashboard() {
         setLoadError(err instanceof Error ? err.message : "Failed to load cloud projects.");
       })
       .finally(() => {
-        setIsLoading(false);
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
       });
-  }, [router]);
 
-  useEffect(() => {
-    let isCancelled = false;
-    if (!isAuthLoading) {
-      if (!user) {
-        router.push("/login?from=/projects");
-      } else {
-        cloudApi.projects
-          .list("all")
-          .then((data) => {
-            if (!isCancelled) {
-              setProjects(data);
-              setIsLoading(false);
-            }
-          })
-          .catch((err: unknown) => {
-            if (!isCancelled) {
-              if (err instanceof Error && err.message === "UNAUTHORIZED") {
-                router.push("/login?from=/projects");
-                return;
-              }
-              setLoadError(err instanceof Error ? err.message : "Failed to load cloud projects.");
-              setIsLoading(false);
-            }
-          });
-      }
-    }
     return () => {
-      isCancelled = true;
+      controller.abort();
     };
-  }, [user, isAuthLoading, router]);
+  }, [isAuthLoading, reloadToken, router, userId]);
 
   // Badge counts
   const counts = useMemo(() => {
-    const activeProjects = projects.filter((p) => !p.isTrash);
-    const trashedProjects = projects.filter((p) => p.isTrash);
+    const activeProjects = visibleProjects.filter((p) => !p.isTrash);
+    const trashedProjects = visibleProjects.filter((p) => p.isTrash);
     const starredProjects = activeProjects.filter((p) => p.starred);
     const recentProjects = [...activeProjects].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 4);
 
@@ -117,11 +118,11 @@ export default function ProjectsDashboard() {
       starred: starredProjects.length,
       trash: trashedProjects.length,
     };
-  }, [projects]);
+  }, [visibleProjects]);
 
   // Filtered & Sorted Projects
   const filteredProjects = useMemo(() => {
-    let list = [...projects];
+    let list = [...visibleProjects];
 
     if (currentCategory === "trash") {
       list = list.filter((p) => p.isTrash);
@@ -163,7 +164,7 @@ export default function ProjectsDashboard() {
     });
 
     return list;
-  }, [projects, currentCategory, filterType, searchQuery, sortBy]);
+  }, [visibleProjects, currentCategory, filterType, searchQuery, sortBy]);
 
   // Project action handlers
   const handleStarToggle = async (id: string, e: MouseEvent) => {
@@ -210,7 +211,7 @@ export default function ProjectsDashboard() {
     try {
       await cloudApi.projects.update(id, { name: name.trim() });
     } catch {
-      fetchCloudProjects();
+      requestProjectReload();
     }
   };
 
@@ -221,7 +222,7 @@ export default function ProjectsDashboard() {
     try {
       await cloudApi.projects.delete(id, false);
     } catch {
-      fetchCloudProjects();
+      requestProjectReload();
     }
   };
 
@@ -232,7 +233,7 @@ export default function ProjectsDashboard() {
     try {
       await cloudApi.projects.update(id, { isTrash: false });
     } catch {
-      fetchCloudProjects();
+      requestProjectReload();
     }
   };
 
@@ -244,7 +245,7 @@ export default function ProjectsDashboard() {
     try {
       await cloudApi.projects.delete(id, true);
     } catch {
-      fetchCloudProjects();
+      requestProjectReload();
     }
   };
 
@@ -256,7 +257,7 @@ export default function ProjectsDashboard() {
     try {
       await cloudApi.projects.emptyTrash();
     } catch {
-      fetchCloudProjects();
+      requestProjectReload();
     }
   };
 
@@ -438,7 +439,7 @@ export default function ProjectsDashboard() {
           )}
 
           {/* Loading Skeletons */}
-          {isLoading && (
+          {isProjectsLoading && (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-xs text-neutral-400">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0d99ff]" />
@@ -467,7 +468,7 @@ export default function ProjectsDashboard() {
               </div>
               <button
                 type="button"
-                onClick={fetchCloudProjects}
+                onClick={requestProjectReload}
                 className="flex items-center gap-1.5 px-2.5 py-1 bg-white border border-rose-200 rounded hover:bg-rose-100/50 transition font-medium cursor-pointer"
               >
                 <RefreshCw className="w-3 h-3" />
@@ -517,7 +518,7 @@ export default function ProjectsDashboard() {
           )}
 
           {/* Empty State */}
-          {!isLoading && filteredProjects.length === 0 && currentCategory !== "templates" && (
+          {!isProjectsLoading && filteredProjects.length === 0 && currentCategory !== "templates" && (
             <ProjectEmptyState
               category={currentCategory}
               isSearchActive={Boolean(searchQuery.trim())}
@@ -529,7 +530,7 @@ export default function ProjectsDashboard() {
           )}
 
           {/* Projects Canvas: Grid View (Figma-Style Responsive Grid) */}
-          {!isLoading && filteredProjects.length > 0 && viewMode === "grid" && (
+          {!isProjectsLoading && filteredProjects.length > 0 && viewMode === "grid" && (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
               {filteredProjects.map((project) => (
                 <ProjectCard
@@ -550,7 +551,7 @@ export default function ProjectsDashboard() {
           )}
 
           {/* Projects Canvas: List View */}
-          {!isLoading && filteredProjects.length > 0 && viewMode === "list" && (
+          {!isProjectsLoading && filteredProjects.length > 0 && viewMode === "list" && (
             <div className="space-y-1.5">
               {filteredProjects.map((project) => (
                 <ProjectCard
@@ -577,7 +578,7 @@ export default function ProjectsDashboard() {
         isOpen={isNewProjectOpen}
         onClose={() => setIsNewProjectOpen(false)}
         onCreated={(id) => {
-          fetchCloudProjects();
+          requestProjectReload();
           router.push(`/editor/${id}`);
         }}
       />
@@ -588,7 +589,7 @@ export default function ProjectsDashboard() {
         onClose={() => setIsImportProjectOpen(false)}
         onImported={(id) => {
           setIsImportProjectOpen(false);
-          fetchCloudProjects();
+          requestProjectReload();
           router.push(`/editor/${id}`);
         }}
       />

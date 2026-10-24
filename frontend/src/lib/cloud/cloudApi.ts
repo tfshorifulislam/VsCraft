@@ -36,6 +36,11 @@ export interface LoadedFileContent extends CachedFileContent {
 
 const pendingFileContent = new Map<string, Promise<LoadedFileContent>>();
 
+function clearUserCaches(): void {
+  fileContentCache.clear();
+  pendingFileContent.clear();
+}
+
 async function readJsonResponse(res: Response): Promise<Record<string, unknown>> {
   const raw = await res.text();
   if (!raw) return {};
@@ -83,6 +88,7 @@ export const cloudApi = {
       if (!res.ok) {
         throw new Error(data.error || "Failed to create account.");
       }
+      clearUserCaches();
       return data;
     },
 
@@ -96,17 +102,28 @@ export const cloudApi = {
       if (!res.ok) {
         throw new Error(data.error || "Failed to sign in.");
       }
+      clearUserCaches();
       return data;
     },
 
     async logout(): Promise<void> {
-      await fetch("/api/auth/logout", { method: "POST" });
+      try {
+        await fetch("/api/auth/logout", { method: "POST" });
+      } finally {
+        clearUserCaches();
+      }
     },
   },
 
   projects: {
-    async list(category: "all" | "recent" | "starred" | "trash" = "all"): Promise<Project[]> {
-      const res = await fetch(`/api/projects?category=${category}`, { cache: "no-store" });
+    async list(
+      category: "all" | "recent" | "starred" | "trash" = "all",
+      signal?: AbortSignal
+    ): Promise<Project[]> {
+      const res = await fetch(`/api/projects?category=${category}`, {
+        cache: "no-store",
+        signal,
+      });
       if (!res.ok) {
         if (res.status === 401) {
           throw new Error("UNAUTHORIZED");
