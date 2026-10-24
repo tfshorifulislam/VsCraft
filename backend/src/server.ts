@@ -60,6 +60,11 @@ app.use("/api/workspaces", workspacesRouter);
 // Global Error Handler
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("Express Unhandled Error:", err);
+  if (err.type === "entity.too.large" || err.status === 413) {
+    return res.status(413).json({
+      error: "Project payload exceeds maximum allowed upload size (50MB). Please exclude large media or archives.",
+    });
+  }
   res.status(err.status || 500).json({
     error: err.message || "Internal Server Error",
   });

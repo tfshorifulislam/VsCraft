@@ -128,7 +128,7 @@ export async function createCloudProject(
       },
     });
 
-    for (const f of templateFiles) {
+    const filesToCreate = templateFiles.map((f) => {
       const oldId = f.id || f.path;
       const newId = idMap.get(oldId)!;
       let newParentId: string | null = null;
@@ -138,19 +138,22 @@ export async function createCloudProject(
         const parentPath = f.path.substring(0, f.path.lastIndexOf("/"));
         newParentId = idMap.get(parentPath) || null;
       }
+      return {
+        id: newId,
+        projectId: project.id,
+        name: f.name,
+        path: f.path,
+        content: f.content || "",
+        language: f.language || (f.isFolder ? "" : "plaintext"),
+        isFolder: f.isFolder,
+        parentId: newParentId,
+        version: 1,
+      };
+    });
 
-      await tx.projectFile.create({
-        data: {
-          id: newId,
-          projectId: project.id,
-          name: f.name,
-          path: f.path,
-          content: f.content || "",
-          language: f.language || (f.isFolder ? "" : "plaintext"),
-          isFolder: f.isFolder,
-          parentId: newParentId,
-          version: 1,
-        },
+    if (filesToCreate.length > 0) {
+      await tx.projectFile.createMany({
+        data: filesToCreate,
       });
     }
 
@@ -162,7 +165,7 @@ export async function createCloudProject(
         },
       },
     });
-  });
+  }, { maxWait: 10000, timeout: 30000 });
 }
 
 export async function seedStarterProjectsForUser(userId: string) {

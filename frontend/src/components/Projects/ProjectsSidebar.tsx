@@ -140,8 +140,10 @@ export default function ProjectsSidebar({
           )}
         </div>
 
+        <div className="border-t border-[#e5e7eb] my-2.5" ></div>
+
         {/* Navigation Categories */}
-        <nav className="space-y-0.5 pt-2">
+        <nav className="space-y-2.5 pt-2.5">
           {navItems.map((item) => {
             const isActive = currentCategory === item.id;
             return (
@@ -210,8 +212,12 @@ export default function ProjectsSidebar({
                 />
                 <div className="absolute left-2.5 right-2.5 bottom-14 bg-white border border-[#e5e7eb] rounded-xl shadow-lg p-1.5 text-xs space-y-1 animate-in fade-in zoom-in-95 duration-100 z-50">
                   <div className="px-2.5 py-1.5 border-b border-[#f0f0f0] mb-1">
-                    <p className="font-semibold text-neutral-900 truncate">{user.name}</p>
-                    <p className="text-[11px] text-neutral-500 truncate">{user.email}</p>
+                    <p className="font-semibold text-neutral-900 truncate">
+                      {user.name}
+                    </p>
+                    <p className="text-[11px] text-neutral-500 truncate">
+                      {user.email}
+                    </p>
                   </div>
                   <button
                     type="button"

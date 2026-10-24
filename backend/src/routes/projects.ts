@@ -90,6 +90,7 @@ const IGNORED_FILES = new Set([
   "package-lock.json.bak",
 ]);
 
+const BINARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "avif", "woff", "woff2", "ttf", "otf", "eot", "wasm", "pdf", "mp3", "mp4", "wav"]);
 const IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -107,6 +108,7 @@ function sanitizePath(raw: string): string {
     .replace(/\\/g, "/")
     .replace(/\0/g, "")
     .replace(/^\/+/, "")
+    .replace(/^\.\//, "")
     .trim();
 
   if (
@@ -145,7 +147,7 @@ function getMimeType(ext: string): string {
       return "image/x-icon";
     case "bmp":
       return "image/bmp";
-    case "avif":
+    case "woff": return "font/woff"; case "woff2": return "font/woff2"; case "ttf": return "font/ttf"; case "wasm": return "application/wasm"; case "pdf": return "application/pdf"; case "avif":
       return "image/avif";
     default:
       return "application/octet-stream";
@@ -187,7 +189,7 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
 
   try {
     let projectName = (req.body?.name as string) || "";
-    let projectDescription = (req.body?.description as string) || "";
+    const projectDescription = (req.body?.description as string) || "";
     const extractedFiles: {
       name: string;
       path: string;
@@ -197,24 +199,64 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
     }[] = [];
 
     if (req.body?.zipBase64) {
-      const buffer = Buffer.from(req.body.zipBase64, "base64");
-      const zip = await JSZip.loadAsync(buffer);
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(req.body.zipBase64, "base64");
+      } catch {
+        return res.status(400).json({ error: "Invalid base64 encoding in ZIP archive." });
+      }
+
+      let zip: JSZip;
+      try {
+        zip = await JSZip.loadAsync(buffer);
+      } catch {
+        return res.status(400).json({ error: "Unable to parse ZIP archive. Ensure it is a valid, uncorrupted .zip file." });
+      }
+
       const entries = Object.keys(zip.files);
       if (entries.length === 0) {
         return res.status(400).json({ error: "The uploaded ZIP archive is empty." });
       }
 
+      // Check for common root directory prefix in ZIP
+      const nonDirRawPaths = entries.filter((p) => !zip.files[p].dir);
+      let commonRoot = "";
+      if (nonDirRawPaths.length > 0) {
+        const firstSlash = nonDirRawPaths[0].indexOf("/");
+        if (firstSlash !== -1) {
+          const candidate = nonDirRawPaths[0].slice(0, firstSlash + 1);
+          if (nonDirRawPaths.every((p) => p.startsWith(candidate))) {
+            commonRoot = candidate;
+          }
+        }
+      }
+
+      if (!projectName && commonRoot) {
+        projectName = commonRoot.replace(/\/$/, "").replace(/[-_]/g, " ");
+      }
+
       for (const [rawPath, zipEntry] of Object.entries(zip.files)) {
         if (zipEntry.dir) continue;
-        const sanitized = sanitizePath(rawPath);
+        let relative = rawPath;
+        if (commonRoot && relative.startsWith(commonRoot)) {
+          relative = relative.slice(commonRoot.length);
+        }
+        if (!relative) continue;
+
+        let sanitized: string;
+        try {
+          sanitized = sanitizePath(relative);
+        } catch (sanitizeErr) {
+          return res.status(400).json({ error: (sanitizeErr as Error).message });
+        }
         if (!sanitized || isIgnored(sanitized)) continue;
 
         const fileName = sanitized.split("/").pop() || "";
         const ext = fileName.split(".").pop()?.toLowerCase() || "";
-        const isImage = IMAGE_EXTENSIONS.has(ext);
+        const isBinary = BINARY_EXTENSIONS.has(ext);
 
         let content = "";
-        if (isImage && ext !== "svg") {
+        if (isBinary && ext !== "svg") {
           const entryBuffer = await zipEntry.async("nodebuffer");
           const mime = getMimeType(ext);
           content = `data:${mime};base64,${entryBuffer.toString("base64")}`;
@@ -227,38 +269,54 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
           path: sanitized,
           content,
           isFolder: false,
-          language: isImage ? "image" : ext || "plaintext",
+          language: isBinary ? (IMAGE_EXTENSIONS.has(ext) ? "image" : ext) : ext || "plaintext",
         });
       }
     } else if (Array.isArray(req.body?.files)) {
       for (const f of req.body.files) {
-        const sanitized = sanitizePath(f.path || f.name);
+        if (!f || typeof f !== "object") continue;
+        let sanitized: string;
+        try {
+          sanitized = sanitizePath(f.path || f.name || "");
+        } catch (sanitizeErr) {
+          return res.status(400).json({ error: (sanitizeErr as Error).message });
+        }
         if (!sanitized || isIgnored(sanitized)) continue;
 
         const fileName = sanitized.split("/").pop() || f.name;
         const ext = fileName.split(".").pop()?.toLowerCase() || "";
-        const isImage = IMAGE_EXTENSIONS.has(ext);
+        const isBinary = BINARY_EXTENSIONS.has(ext);
 
         extractedFiles.push({
           name: fileName,
           path: sanitized,
           content: f.content || "",
           isFolder: Boolean(f.isFolder),
-          language: isImage ? "image" : ext || "plaintext",
+          language: isBinary ? (IMAGE_EXTENSIONS.has(ext) ? "image" : ext) : ext || "plaintext",
         });
       }
+    } else {
+      return res.status(400).json({ error: "No files or archive provided in request." });
     }
 
-    if (extractedFiles.length === 0) {
+    const fileEntries = extractedFiles.filter((f) => !f.isFolder);
+
+    if (fileEntries.length === 0) {
       return res.status(400).json({
-        error: "No valid files found to import (ignored files/dependencies may have been filtered).",
+        error: "No valid files found to import (all files/dependencies may have been filtered or ignored).",
       });
     }
 
-    const detection = detectProjectFramework(extractedFiles);
+    if (fileEntries.length > 5000) {
+      return res.status(400).json({
+        error: `Project contains too many files (${fileEntries.length}). Maximum allowed is 5000 files.`,
+      });
+    }
+
+    const detection = detectProjectFramework(fileEntries);
     const chosenTemplate = detection.template;
 
-    const pkg = extractedFiles.find((f) => f.path === "package.json");
+    const pkg = fileEntries.find((f) => f.path === "package.json");
     if (pkg && !projectName) {
       try {
         const parsed = JSON.parse(pkg.content);
@@ -272,6 +330,21 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
       projectName = "Imported Project";
     }
 
+    // Build directory tree
+    const directoryPaths = new Set<string>();
+    for (const f of fileEntries) {
+      const parts = f.path.split("/");
+      let current = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        current = current ? `${current}/${parts[i]}` : parts[i];
+        directoryPaths.add(current);
+      }
+    }
+
+    const sortedDirPaths = Array.from(directoryPaths).sort(
+      (a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b)
+    );
+
     const folderMap = new Map<string, string>();
     const fileRecordsToCreate: {
       id: string;
@@ -284,48 +357,40 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
       version: number;
     }[] = [];
 
-    for (const file of extractedFiles) {
-      const parts = file.path.split("/");
-      if (parts.length > 1) {
-        let running = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-          const folderName = parts[i];
-          const prev = running;
-          running = running ? `${running}/${folderName}` : folderName;
+    // 1. Folders
+    for (const dirPath of sortedDirPaths) {
+      const dirId = generateId("dir");
+      folderMap.set(dirPath, dirId);
+      const parts = dirPath.split("/");
+      const dirName = parts[parts.length - 1];
+      const parentPath = parts.length > 1 ? parts.slice(0, -1).join("/") : null;
+      const parentId = parentPath ? folderMap.get(parentPath) || null : null;
 
-          if (!folderMap.has(running)) {
-            const folderId = generateId("dir");
-            folderMap.set(running, folderId);
-            fileRecordsToCreate.push({
-              id: folderId,
-              name: folderName,
-              path: running,
-              content: "",
-              language: "",
-              isFolder: true,
-              parentId: prev ? folderMap.get(prev) || null : null,
-              version: 1,
-            });
-          }
-        }
-      }
+      fileRecordsToCreate.push({
+        id: dirId,
+        name: dirName,
+        path: dirPath,
+        content: "",
+        language: "",
+        isFolder: true,
+        parentId,
+        version: 1,
+      });
     }
 
-    for (const file of extractedFiles) {
-      const parts = file.path.split("/");
-      let parentId: string | null = null;
-      if (parts.length > 1) {
-        const parentPath = parts.slice(0, -1).join("/");
-        parentId = folderMap.get(parentPath) || null;
-      }
+    // 2. Files
+    for (const f of fileEntries) {
+      const parts = f.path.split("/");
+      const parentPath = parts.length > 1 ? parts.slice(0, -1).join("/") : null;
+      const parentId = parentPath ? folderMap.get(parentPath) || null : null;
 
       fileRecordsToCreate.push({
         id: generateId("f"),
-        name: file.name,
-        path: file.path,
-        content: file.content,
-        language: file.language || "plaintext",
-        isFolder: file.isFolder,
+        name: f.name,
+        path: f.path,
+        content: f.content,
+        language: f.language || "plaintext",
+        isFolder: false,
         parentId,
         version: 1,
       });
@@ -333,22 +398,42 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
 
     const preferredFiles = [
       "src/app/page.tsx",
+      "src/app/page.jsx",
+      "src/app/page.js",
+      "app/page.tsx",
+      "src/pages/index.tsx",
+      "src/pages/index.jsx",
+      "src/pages/index.js",
+      "pages/index.tsx",
       "src/App.tsx",
+      "src/App.jsx",
       "src/main.tsx",
+      "src/main.jsx",
       "src/index.tsx",
+      "src/index.jsx",
       "src/index.js",
+      "index.html",
+      "server.js",
+      "server.ts",
+      "src/server.ts",
       "main.py",
       "app.py",
-      "main.rs",
       "main.go",
-      "index.html",
-      "README.md",
+      "main.rs",
       "package.json",
+      "README.md",
     ];
 
-    let activeRecord = fileRecordsToCreate.find(
-      (f) => !f.isFolder && preferredFiles.includes(f.path)
-    );
+    let activeRecord: (typeof fileRecordsToCreate)[0] | undefined;
+    for (const pref of preferredFiles) {
+      const match = fileRecordsToCreate.find(
+        (f) => !f.isFolder && f.path.toLowerCase() === pref.toLowerCase()
+      );
+      if (match) {
+        activeRecord = match;
+        break;
+      }
+    }
     if (!activeRecord) {
       activeRecord = fileRecordsToCreate.find((f) => !f.isFolder);
     }
@@ -391,7 +476,17 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
       }
 
       return createdProject;
-    });
+    }, { maxWait: 10000, timeout: 30000 });
+
+    // Write all project files to disk workspace immediately!
+    try {
+      await ensureWorkspaceOnDisk({
+        id: newProject.id,
+        files: fileRecordsToCreate,
+      });
+    } catch (diskErr) {
+      console.error("Failed to write imported project to workspace disk:", diskErr);
+    }
 
     return res.json({
       success: true,

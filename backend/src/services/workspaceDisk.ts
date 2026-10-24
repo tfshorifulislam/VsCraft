@@ -38,7 +38,8 @@ export function resolveSafePath(projectId: string, relativePath: string): string
   }
 
   const workspaceDir = path.resolve(getWorkspaceDir(projectId));
-  const target = path.resolve(workspaceDir, relativePath);
+  const cleanRelative = relativePath.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+  const target = path.resolve(workspaceDir, cleanRelative);
 
   // Lexical path traversal check
   if (target !== workspaceDir && !target.startsWith(workspaceDir + path.sep)) {
@@ -101,13 +102,14 @@ export async function ensureWorkspaceOnDisk(project: {
       await fsp.mkdir(parentDir, { recursive: true });
 
       // Handle binary images vs text content
-      if (file.content.startsWith("data:") && file.content.includes(";base64,")) {
-        const commaIndex = file.content.indexOf(",");
-        const base64Data = file.content.slice(commaIndex + 1);
+      const rawContent = file.content || "";
+      if (rawContent.startsWith("data:") && rawContent.includes(";base64,")) {
+        const commaIndex = rawContent.indexOf(",");
+        const base64Data = rawContent.slice(commaIndex + 1);
         const buffer = Buffer.from(base64Data, "base64");
         await fsp.writeFile(filePath, buffer);
       } else {
-        await fsp.writeFile(filePath, file.content ?? "", "utf-8");
+        await fsp.writeFile(filePath, rawContent, "utf-8");
       }
     }
   }
@@ -134,13 +136,14 @@ export async function writeProjectFileToDisk(
   const parentDir = path.dirname(targetPath);
   await fsp.mkdir(parentDir, { recursive: true });
 
-  if (content.startsWith("data:") && content.includes(";base64,")) {
-    const commaIndex = content.indexOf(",");
-    const base64Data = content.slice(commaIndex + 1);
+  const safeContent = content || "";
+  if (safeContent.startsWith("data:") && safeContent.includes(";base64,")) {
+    const commaIndex = safeContent.indexOf(",");
+    const base64Data = safeContent.slice(commaIndex + 1);
     const buffer = Buffer.from(base64Data, "base64");
     await fsp.writeFile(targetPath, buffer);
   } else {
-    await fsp.writeFile(targetPath, content, "utf-8");
+    await fsp.writeFile(targetPath, safeContent, "utf-8");
   }
 }
 
