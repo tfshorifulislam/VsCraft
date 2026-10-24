@@ -91,6 +91,8 @@ export interface Project {
   starred?: boolean;
   isTrash?: boolean;
   trashedAt?: number;
+  contentLazy?: boolean;
+  loadedFileIds?: string[];
   createdAt: number;
   updatedAt: number;
 }

@@ -87,16 +87,24 @@ export function resolveSafePath(projectId: string, relativePath: string): string
  */
 export async function ensureWorkspaceOnDisk(project: {
   id: string;
-  files: Array<{ path: string; isFolder: boolean; content: string }>;
+  files: Array<{ id?: string; path: string; isFolder: boolean; content: string }>;
+  contentLazy?: boolean;
+  loadedFileIds?: string[];
 }): Promise<string> {
   const workspaceDir = getWorkspaceDir(project.id);
   await fsp.mkdir(workspaceDir, { recursive: true });
+  const loadedIds = project.contentLazy
+    ? new Set(project.loadedFileIds || [])
+    : null;
 
   for (const file of project.files) {
     if (file.isFolder) {
       const folderPath = resolveSafePath(project.id, file.path);
       await fsp.mkdir(folderPath, { recursive: true });
     } else {
+      if (loadedIds && (!file.id || !loadedIds.has(file.id))) {
+        continue;
+      }
       const filePath = resolveSafePath(project.id, file.path);
       const parentDir = path.dirname(filePath);
       await fsp.mkdir(parentDir, { recursive: true });
@@ -150,6 +158,11 @@ export async function writeProjectFileToDisk(
 /**
  * Deletes a file or directory from the workspace on disk.
  */
+export async function deleteWorkspaceDir(projectId: string): Promise<void> {
+  const workspaceDir = getWorkspaceDir(projectId);
+  await fsp.rm(workspaceDir, { recursive: true, force: true });
+}
+
 export async function deleteProjectFileFromDisk(
   projectId: string,
   relativePath: string

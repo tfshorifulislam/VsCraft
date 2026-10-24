@@ -37,6 +37,15 @@ import {
   getTerminalWSPort,
 } from "../services/terminalWebSocketServer";
 import { detectProjectFramework } from "../utils/detectFramework";
+import {
+  beginProjectImport,
+  importProjectFileBatch,
+  appendProjectImportChunk,
+  finalizeProjectImport,
+  abortProjectImport,
+  clearProjectImportUploads,
+  ProjectImportError,
+} from "../services/projectImportService";
 import JSZip from "jszip";
 import crypto from "crypto";
 import fsp from "fs/promises";
@@ -506,11 +515,151 @@ router.post("/import", requireAuth, async (req: AuthenticatedRequest, res: Respo
   }
 });
 
+// POST /api/projects/import/begin - start a chunked local-folder import
+router.post("/import/begin", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { name, description } = req.body || {};
+
+  if (!name || typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "A project name is required." });
+  }
+
+  try {
+    const project = await beginProjectImport(
+      userId,
+      name,
+      typeof description === "string" ? description : undefined
+    );
+    return res.status(201).json({ project });
+  } catch (error: unknown) {
+    console.error("Begin project import error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Failed to start project import.",
+    });
+  }
+});
+
+// POST /api/projects/:id/import/files - append a validated batch of files/folders
+router.post("/:id/import/files", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+  const projectId = req.params.id;
+
+  try {
+    const files = req.body?.files;
+    if (!Array.isArray(files)) {
+      return res.status(400).json({ error: "The import request must include a files array." });
+    }
+
+    const result = await importProjectFileBatch(projectId, userId, files);
+    return res.status(201).json({ success: true, ...result });
+  } catch (error: unknown) {
+    console.error(
+      "Import file batch error:",
+      error instanceof Error ? error.message : error
+    );
+    if (error instanceof ProjectImportError) {
+      return res.status(error.status).json({
+        error: error.message,
+        stage: error.stage,
+      });
+    }
+
+    const message = error instanceof Error ? error.message : "Failed to import files.";
+    const isNotFound = message.includes("not found or unauthorized");
+    const isDatabaseError =
+      typeof error === "object" &&
+      error !== null &&
+      (typeof (error as { code?: unknown }).code === "string" ||
+        (error instanceof Error && error.name.startsWith("Prisma")));
+
+    if (isDatabaseError) {
+      return res.status(500).json({
+        error: "The database could not save this import batch.",
+        stage: "database",
+      });
+    }
+
+    return res.status(isNotFound ? 404 : 400).json({
+      error: message,
+      stage: "validation",
+    });
+  }
+});
+
+// POST /api/projects/:id/import/chunk - stage one chunk of a large file
+router.post("/:id/import/chunk", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+  const projectId = req.params.id;
+
+  try {
+    const result = await appendProjectImportChunk(projectId, userId, req.body || {});
+    return res.status(201).json({ success: true, ...result });
+  } catch (error: unknown) {
+    console.error(
+      "Import chunk error:",
+      error instanceof Error ? error.message : error
+    );
+    if (error instanceof ProjectImportError) {
+      return res.status(error.status).json({
+        error: error.message,
+        stage: error.stage,
+      });
+    }
+
+    const message = error instanceof Error ? error.message : "Failed to store import chunk.";
+    const status = message.includes("not found or unauthorized") ? 404 : 400;
+    return res.status(status).json({ error: message, stage: "upload" });
+  }
+});
+
+// POST /api/projects/:id/import/finalize - mark the imported project as complete
+router.post("/:id/import/finalize", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+  const projectId = req.params.id;
+
+  try {
+    const result = await finalizeProjectImport(projectId, userId);
+    return res.json({ success: true, ...result });
+  } catch (error: unknown) {
+    console.error(
+      "Finalize project import error:",
+      error instanceof Error ? error.message : error
+    );
+    if (error instanceof ProjectImportError) {
+      return res.status(error.status).json({
+        error: error.message,
+        stage: error.stage,
+      });
+    }
+    const message = error instanceof Error ? error.message : "Failed to finalize project import.";
+    const status = message.includes("not found or unauthorized") ? 404 : 400;
+    return res.status(status).json({ error: message, stage: "validation" });
+  }
+});
+
+// POST /api/projects/:id/import/abort - delete an incomplete import and its workspace
+router.post("/:id/import/abort", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+  const projectId = req.params.id;
+
+  try {
+    const aborted = await abortProjectImport(projectId, userId);
+    if (!aborted) {
+      return res.status(404).json({ error: "No incomplete import was found for this project." });
+    }
+    return res.json({ success: true });
+  } catch (error: unknown) {
+    console.error("Abort project import error:", error);
+    return res.status(500).json({ error: "Failed to clean up the incomplete import." });
+  }
+});
+
 // POST /api/projects/trash/empty
 router.post("/trash/empty", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user!.id;
   try {
     const result = await emptyTrashForUser(userId);
+    await Promise.all(result.ids.map((id) => clearProjectImportUploads(id)));
     return res.json({ success: true, count: result.count });
   } catch (error) {
     console.error("Failed to empty trash:", error);
@@ -574,15 +723,19 @@ router.get("/:id", requireAuth, async (req: AuthenticatedRequest, res: Response)
   const projectId = req.params.id;
 
   try {
-    const project = await getProjectById(projectId, userId);
+    const project = await getProjectById(projectId, userId, {
+      includeContent: req.query.includeContent === "full" ? "full" : "auto",
+    });
     if (!project) {
       return res.status(404).json({ error: "Project not found or unauthorized." });
     }
 
-    try {
-      await ensureWorkspaceOnDisk(project);
-    } catch (diskErr) {
-      console.warn("Could not synchronize workspace to disk:", diskErr);
+    if (!project.contentLazy) {
+      try {
+        await ensureWorkspaceOnDisk(project);
+      } catch (diskErr) {
+        console.warn("Could not synchronize workspace to disk:", diskErr);
+      }
     }
 
     return res.json({ project });
@@ -621,6 +774,9 @@ router.delete("/:id", requireAuth, async (req: AuthenticatedRequest, res: Respon
     const result = await deleteProject(projectId, userId, permanent);
     if (!result) {
       return res.status(404).json({ error: "Project not found or unauthorized." });
+    }
+    if (permanent) {
+      await clearProjectImportUploads(projectId);
     }
     return res.json({ success: true, permanent });
   } catch (error) {
@@ -696,6 +852,7 @@ router.post("/:id/cleanup", requireAuth, async (req: AuthenticatedRequest, res: 
   } catch (err) {
     console.warn("Failed to delete draft project during cleanup:", err);
   }
+  await clearProjectImportUploads(projectId);
 
   return res.json({ success: true });
 });
@@ -822,7 +979,7 @@ router.get("/:id/preview", requireAuth, async (req: AuthenticatedRequest, res: R
   const userId = req.user!.id;
   const projectId = req.params.id;
 
-  const project = await getProjectById(projectId, userId);
+  const project = await getProjectById(projectId, userId, { includeContent: "full" });
   if (!project) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.status(404).send("<!DOCTYPE html><html><body><div style='padding:20px;font-family:sans-serif;color:#ef4444;'>Project not found or unauthorized.</div></body></html>");

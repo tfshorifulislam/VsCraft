@@ -4,6 +4,9 @@ import path from "path";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:4000";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    proxyTimeout: 300_000,
+  },
   async rewrites() {
     return [
       {

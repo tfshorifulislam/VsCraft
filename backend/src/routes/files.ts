@@ -5,6 +5,7 @@ import {
   updateProjectFileContent,
   renameProjectFile,
   deleteProjectFile,
+  getProjectFileContent,
 } from "../services/projectService";
 
 const router = Router();
@@ -39,6 +40,27 @@ router.post("/:id/files", requireAuth, async (req: AuthenticatedRequest, res: Re
     return res.status(500).json({ error: message });
   }
 });
+
+// GET /api/projects/:id/files/:fileId/content - load file content on demand
+router.get(
+  "/:id/files/:fileId/content",
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response) => {
+    const userId = req.user!.id;
+    const { id: projectId, fileId } = req.params;
+
+    try {
+      const file = await getProjectFileContent(projectId, fileId, userId);
+      if (!file) {
+        return res.status(404).json({ error: "File not found or unauthorized." });
+      }
+      return res.json({ file });
+    } catch (error) {
+      console.error("Load file content error:", error);
+      return res.status(500).json({ error: "Failed to load file content." });
+    }
+  }
+);
 
 // PATCH /api/projects/:id/files/:fileId - update content
 router.patch("/:id/files/:fileId", requireAuth, async (req: AuthenticatedRequest, res: Response) => {

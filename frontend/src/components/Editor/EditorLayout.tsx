@@ -66,6 +66,8 @@ interface EditorLayoutProps {
 export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const router = useRouter();
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const persistedTabsRef = useRef<string | null>(null);
+  const loadedFileIdsRef = useRef<Set<string>>(new Set());
   const inMemoryFileContentsRef = useRef<Map<string, string>>(new Map());
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved" | "error">("saved");
 
@@ -101,6 +103,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     }
 
     let isCancelled = false;
+    persistedTabsRef.current = null;
     setIsLoadingProject(true);
     setProjectLoadError(null);
     setIsPreviewOpen(false);
@@ -144,8 +147,29 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           validOpenIds.push(activeId);
         }
 
+        loadedFileIdsRef.current = new Set(
+          cloudProj.loadedFileIds ||
+            cloudProj.files.filter((file) => !file.isFolder).map((file) => file.id)
+        );
+
+        let projectFiles = cloudProj.files;
+        if (activeId && !loadedFileIdsRef.current.has(activeId)) {
+          try {
+            const loaded = await cloudApi.files.getContent(cloudProj.id, activeId);
+            loadedFileIdsRef.current.add(activeId);
+            projectFiles = projectFiles.map((file) =>
+              file.id === activeId
+                ? { ...file, content: loaded.content, version: loaded.version }
+                : file
+            );
+          } catch (err) {
+            console.error("Failed to load active file content:", err);
+          }
+        }
+
         setActiveProject({
           ...cloudProj,
+          files: projectFiles,
           activeFileId: activeId,
           openFileIds: validOpenIds,
         });
@@ -198,13 +222,45 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     .map((id) => activeProject?.files.find((f) => f.id === id))
     .filter((f): f is ProjectFile => !!f && !f.isFolder);
 
+  // Persist the open tabs and active file so imported projects reopen where the
+  // user left off. The first render after loading is skipped to avoid a write.
+  const tabsProjectId = activeProject?.id;
+  const tabsActiveFileId = activeProject?.activeFileId;
+  const tabsOpenFileIds = activeProject?.openFileIds;
+
+  useEffect(() => {
+    if (!tabsProjectId || !tabsOpenFileIds) return;
+    const key = `${tabsProjectId}:${tabsActiveFileId || ""}:${tabsOpenFileIds.join(",")}`;
+    if (persistedTabsRef.current === null) {
+      persistedTabsRef.current = key;
+      return;
+    }
+    if (persistedTabsRef.current === key) return;
+    persistedTabsRef.current = key;
+
+    const openFileIds = [...tabsOpenFileIds];
+    const timeout = setTimeout(() => {
+      cloudApi.projects
+        .update(tabsProjectId, { activeFileId: tabsActiveFileId ?? null, openFileIds })
+        .catch((err) => console.error("Failed to persist editor tabs:", err));
+    }, 400);
+
+    return () => clearTimeout(timeout);
+  }, [tabsProjectId, tabsActiveFileId, tabsOpenFileIds]);
+
   // Save implementation: writes to database and physical filesystem
   const performCloudSave = useCallback(
     async (fileId: string, content: string) => {
       if (!activeProject) return;
       setSaveStatus("saving");
       try {
-        const res = await cloudApi.files.saveContent(activeProject.id, fileId, content);
+        const currentVersion = activeProject.files.find((file) => file.id === fileId)?.version;
+        const res = await cloudApi.files.saveContent(
+          activeProject.id,
+          fileId,
+          content,
+          currentVersion
+        );
         if (res.error) {
           setSaveStatus("error");
           setConsoleMessages((prev) => [
@@ -220,6 +276,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         }
 
         if (res.file) {
+          loadedFileIdsRef.current.add(fileId);
           const updatedVersion = res.file.version;
           setActiveProject((prev) => {
             if (!prev) return null;
@@ -290,10 +347,43 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   }, [activeProject, activeFile, performCloudSave]);
 
   const handleSelectFile = useCallback(
-    (fileId: string) => {
+    async (fileId: string) => {
       if (!activeProject) return;
       const file = activeProject.files.find((f) => f.id === fileId);
       if (!file || file.isFolder) return;
+
+      if (activeProject.contentLazy && !loadedFileIdsRef.current.has(fileId)) {
+        try {
+          const loaded = await cloudApi.files.getContent(activeProject.id, fileId);
+          loadedFileIdsRef.current.add(fileId);
+          setActiveProject((prev) => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              files: prev.files.map((candidate) =>
+                candidate.id === fileId
+                  ? {
+                      ...candidate,
+                      content: loaded.content,
+                      version: loaded.version,
+                    }
+                  : candidate
+              ),
+            };
+          });
+        } catch (err) {
+          setConsoleMessages((prev) => [
+            ...prev,
+            {
+              id: getEditorUniqueId("err"),
+              type: "error",
+              content: `Failed to open file: ${err instanceof Error ? err.message : "Network error"}`,
+              timestamp: getTimestamp(),
+            },
+          ]);
+          return;
+        }
+      }
 
       // If switching away from an unsaved file, flush save immediately
       if (activeFile && unsavedFiles[activeFile.id]) {
@@ -374,6 +464,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       });
 
       if (serverFile) {
+        if (!serverFile.isFolder) loadedFileIdsRef.current.add(serverFile.id);
         setActiveProject((prev) => {
           if (!prev) return null;
           const nextFiles = [...prev.files, serverFile];
@@ -485,6 +576,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       const uploadedFiles = await cloudApi.files.upload(activeProject.id, fileList, targetFolderPath);
 
       if (uploadedFiles && uploadedFiles.length > 0) {
+        for (const uploaded of uploadedFiles) {
+          if (!uploaded.isFolder) loadedFileIdsRef.current.add(uploaded.id);
+        }
         setActiveProject((prev) => {
           if (!prev) return null;
           const map = new Map<string, ProjectFile>();
@@ -586,6 +680,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   }, []);
 
   const handleFilesSynced = useCallback((updatedFiles: ProjectFile[]) => {
+    for (const file of updatedFiles) {
+      if (!file.isFolder) loadedFileIdsRef.current.add(file.id);
+    }
     setActiveProject((prev) => {
       if (!prev) return null;
       const currentActiveId = prev.activeFileId;

@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "test:import": "node -r dotenv/config scripts/import-regression.cjs",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"
   },

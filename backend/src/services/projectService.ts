@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import prisma from "../db/prisma";
 import { ProjectTemplate, ProjectCreationPayload, FrameworkInitOptions } from "../types/editor";
 import { getTemplateFiles } from "./projectStorage";
@@ -11,8 +12,31 @@ import {
   writeProjectFileToDisk,
   deleteProjectFileFromDisk,
   renameProjectFileOnDisk,
+  deleteWorkspaceDir,
 } from "./workspaceDisk";
 import crypto from "crypto";
+
+const PROJECT_CARD_PREVIEW_CHARS = 1200;
+const MAX_INLINE_EDITOR_CONTENT_CHARS = 2 * 1024 * 1024;
+const EDITOR_CRITICAL_PATHS = [
+  "package.json",
+  "requirements.txt",
+  "pyproject.toml",
+  "Pipfile",
+  "Cargo.toml",
+  "go.mod",
+];
+
+function parseOpenFileIds(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 interface ScaffoldingFile {
   id?: string;
@@ -232,17 +256,38 @@ export async function getUserProjects(userId: string, category: "all" | "recent"
           id: true,
           name: true,
           path: true,
-          content: true,
           language: true,
         },
       },
     },
   });
 
-  return projects;
+  const previewFileIds = projects.flatMap((project) =>
+    project.files.map((file) => file.id)
+  );
+  if (previewFileIds.length === 0) return projects;
+
+  const previews = await prisma.$queryRaw<Array<{ id: string; preview: string }>>`
+    SELECT id, left(content, CAST(${PROJECT_CARD_PREVIEW_CHARS} AS integer)) AS preview
+    FROM "ProjectFile"
+    WHERE id IN (${Prisma.join(previewFileIds)})
+  `;
+  const previewById = new Map(previews.map((preview) => [preview.id, preview.preview]));
+
+  return projects.map((project) => ({
+    ...project,
+    files: project.files.map((file) => ({
+      ...file,
+      content: previewById.get(file.id) || "",
+    })),
+  }));
 }
 
-export async function getProjectById(projectId: string, userId: string) {
+export async function getProjectById(
+  projectId: string,
+  userId: string,
+  options: { includeContent?: "auto" | "full" } = {}
+) {
   const project = await prisma.project.findFirst({
     where: {
       id: projectId,
@@ -251,11 +296,97 @@ export async function getProjectById(projectId: string, userId: string) {
     include: {
       files: {
         orderBy: [{ isFolder: "desc" }, { path: "asc" }],
+        select: {
+          id: true,
+          projectId: true,
+          name: true,
+          path: true,
+          language: true,
+          isFolder: true,
+          parentId: true,
+          version: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       },
     },
   });
+  if (!project) return null;
 
-  return project;
+  let totalChars = 0;
+  if (options.includeContent !== "full") {
+    const [size] = await prisma.$queryRaw<Array<{ chars: bigint }>>`
+      SELECT coalesce(sum(length(content)), 0) AS chars
+      FROM "ProjectFile"
+      WHERE "projectId" = ${projectId} AND "isFolder" = false
+    `;
+    totalChars = Number(size?.chars || 0);
+  }
+
+  const includeAll =
+    options.includeContent === "full" || totalChars <= MAX_INLINE_EDITOR_CONTENT_CHARS;
+  let contentIds: string[];
+
+  if (includeAll) {
+    contentIds = project.files.filter((file) => !file.isFolder).map((file) => file.id);
+  } else {
+    const criticalFiles = await prisma.projectFile.findMany({
+      where: {
+        projectId,
+        isFolder: false,
+        path: { in: EDITOR_CRITICAL_PATHS },
+      },
+      select: { id: true },
+    });
+    contentIds = [
+      ...new Set([
+        ...(project.activeFileId ? [project.activeFileId] : []),
+        ...parseOpenFileIds(project.openFileIds),
+        ...criticalFiles.map((file) => file.id),
+      ]),
+    ];
+  }
+
+  const contentById = new Map<string, string>();
+  if (contentIds.length > 0) {
+    const contents = await prisma.projectFile.findMany({
+      where: { projectId, id: { in: contentIds } },
+      select: { id: true, content: true },
+    });
+    for (const file of contents) contentById.set(file.id, file.content);
+  }
+
+  return {
+    ...project,
+    files: project.files.map((file) => ({
+      ...file,
+      content: contentById.get(file.id) || "",
+    })),
+    contentLazy: !includeAll,
+    loadedFileIds: [...contentById.keys()],
+  };
+}
+
+export async function getProjectFileContent(
+  projectId: string,
+  fileId: string,
+  userId: string
+) {
+  return prisma.projectFile.findFirst({
+    where: {
+      id: fileId,
+      projectId,
+      project: { ownerId: userId },
+      isFolder: false,
+    },
+    select: {
+      id: true,
+      name: true,
+      path: true,
+      content: true,
+      version: true,
+    },
+  });
 }
 
 export async function updateProjectMetadata(
@@ -300,9 +431,13 @@ export async function deleteProject(projectId: string, userId: string, permanent
   if (!existing) return null;
 
   if (permanent) {
-    return prisma.project.delete({
+    const deleted = await prisma.project.delete({
       where: { id: projectId },
     });
+    await deleteWorkspaceDir(projectId).catch((err) =>
+      console.error(`Failed to remove workspace for deleted project ${projectId}:`, err)
+    );
+    return deleted;
   }
 
   return prisma.project.update({
@@ -315,12 +450,27 @@ export async function deleteProject(projectId: string, userId: string, permanent
 }
 
 export async function emptyTrashForUser(userId: string) {
-  return prisma.project.deleteMany({
+  const trashed = await prisma.project.findMany({
+    where: { ownerId: userId, isTrash: true },
+    select: { id: true },
+  });
+
+  const result = await prisma.project.deleteMany({
     where: {
       ownerId: userId,
       isTrash: true,
     },
   });
+
+  await Promise.all(
+    trashed.map((project) =>
+      deleteWorkspaceDir(project.id).catch((err) =>
+        console.error(`Failed to remove workspace for trashed project ${project.id}:`, err)
+      )
+    )
+  );
+
+  return { count: result.count, ids: trashed.map((project) => project.id) };
 }
 
 export async function duplicateProject(projectId: string, userId: string) {
@@ -405,7 +555,7 @@ export async function updateProjectFileContent(
   fileId: string,
   userId: string,
   content: string,
-  _version?: number
+  version?: number
 ) {
   // Verify ownership
   const project = await prisma.project.findFirst({
@@ -418,17 +568,39 @@ export async function updateProjectFileContent(
   });
   if (!file) return { error: "File not found", status: 404 };
 
+  if (typeof version === "number" && version !== file.version) {
+    return {
+      error: "Save conflict: this file was changed by another session. Reload it before saving again.",
+      status: 409,
+      conflict: true,
+      serverVersion: file.version,
+      serverContent: file.content,
+    };
+  }
+
   const nextVersion = (file.version || 0) + 1;
+  const updateResult = await prisma.projectFile.updateMany({
+    where: { id: fileId, projectId, version: file.version },
+    data: {
+      content,
+      version: nextVersion,
+      updatedAt: new Date(),
+    },
+  });
+
+  if (updateResult.count === 0) {
+    const latest = await prisma.projectFile.findUnique({ where: { id: fileId } });
+    return {
+      error: "Save conflict: this file was changed by another session. Reload it before saving again.",
+      status: 409,
+      conflict: true,
+      serverVersion: latest?.version ?? file.version,
+      serverContent: latest?.content ?? file.content,
+    };
+  }
 
   const [updatedFile] = await prisma.$transaction([
-    prisma.projectFile.update({
-      where: { id: fileId },
-      data: {
-        content,
-        version: nextVersion,
-        updatedAt: new Date(),
-      },
-    }),
+    prisma.projectFile.findUniqueOrThrow({ where: { id: fileId } }),
     prisma.project.update({
       where: { id: projectId },
       data: { updatedAt: new Date() },

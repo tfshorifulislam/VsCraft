@@ -11,6 +11,7 @@ import {
   FilePlus,
   Loader2,
   ChevronDown,
+  Archive,
 } from "lucide-react";
 import { DashboardViewCategory } from "./ProjectsSidebar";
 
@@ -28,6 +29,8 @@ interface ProjectsHeaderProps {
   onCreateEmptyProject?: () => void;
   isCreatingEmpty?: boolean;
   onOpenImportProject?: () => void;
+  onOpenArchiveImport?: () => void;
+  isImportingProject?: boolean;
   projectCount?: number;
 }
 
@@ -45,6 +48,8 @@ export default function ProjectsHeader({
   onCreateEmptyProject,
   isCreatingEmpty = false,
   onOpenImportProject,
+  onOpenArchiveImport,
+  isImportingProject = false,
   projectCount = 0,
 }: ProjectsHeaderProps) {
   const getCategoryTitle = () => {
@@ -98,10 +103,29 @@ export default function ProjectsHeader({
             <button
               type="button"
               onClick={onOpenImportProject}
-              className="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-md border border-[#e5e7eb] hover:bg-[#f5f5f5] text-neutral-700 text-xs font-medium shadow-2xs transition cursor-pointer"
+              disabled={isImportingProject}
+              title="Import a local folder (a copy is stored in Code Editor)"
+              className="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-md border border-[#e5e7eb] hover:bg-[#f5f5f5] text-neutral-700 text-xs font-medium shadow-2xs transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <Upload className="w-3.5 h-3.5 text-neutral-500" />
+              {isImportingProject ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0d99ff]" />
+              ) : (
+                <Upload className="w-3.5 h-3.5 text-neutral-500" />
+              )}
               <span>Import</span>
+            </button>
+          )}
+
+          {onOpenArchiveImport && (
+            <button
+              type="button"
+              onClick={onOpenArchiveImport}
+              disabled={isImportingProject}
+              title="Import a ZIP archive"
+              aria-label="Import a ZIP archive"
+              className="inline-flex items-center justify-center p-1.5 rounded-md border border-[#e5e7eb] hover:bg-[#f5f5f5] text-neutral-500 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <Archive className="w-3.5 h-3.5" />
             </button>
           )}
 

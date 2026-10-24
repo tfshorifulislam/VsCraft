@@ -6,9 +6,15 @@ import ProjectsHeader from "./ProjectsHeader";
 import ProjectCard from "./ProjectCard";
 import NewProjectDialog from "./NewProjectDialog";
 import ImportProjectDialog from "./ImportProjectDialog";
+import FolderImportOverlay from "./FolderImportOverlay";
 import ProjectEmptyState from "./ProjectEmptyState";
 import { Project, ProjectTemplate } from "@/types/editor";
 import { cloudApi } from "@/lib/cloud/cloudApi";
+import {
+  importFolderSelection,
+  pickLocalFolder,
+  type FolderImportProgress,
+} from "@/lib/import/localFolderImport";
 import { useAuth } from "@/components/Auth/AuthContext";
 import {
   Trash2,
@@ -39,6 +45,10 @@ export default function ProjectsDashboard() {
   const [sortBy, setSortBy] = useState<"modified" | "name" | "created">("modified");
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
   const [isImportProjectOpen, setIsImportProjectOpen] = useState(false);
+  const [isImportingProject, setIsImportingProject] = useState(false);
+  const [folderImportProgress, setFolderImportProgress] =
+    useState<FolderImportProgress | null>(null);
+  const [folderImportError, setFolderImportError] = useState<string | null>(null);
 
   // Rename modal state
   const [renamingProject, setRenamingProject] = useState<{ id: string; name: string } | null>(null);
@@ -282,6 +292,41 @@ export default function ProjectsDashboard() {
     }
   };
 
+  const handleImportFolder = async () => {
+    if (isImportingProject) return;
+
+    setIsImportingProject(true);
+    setFolderImportError(null);
+
+    try {
+      const selection = await pickLocalFolder(setFolderImportProgress);
+      if (!selection) {
+        setFolderImportProgress(null);
+        return;
+      }
+
+      const result = await importFolderSelection(selection, setFolderImportProgress);
+      setFolderImportProgress((current) =>
+        current
+          ? {
+              ...current,
+              phase: "done",
+              message: `Imported ${result.fileCount} files. Opening editor...`,
+            }
+          : current
+      );
+      router.push(`/editor/${result.projectId}`);
+    } catch (err) {
+      console.error("Folder import error:", err);
+      setFolderImportProgress(null);
+      setFolderImportError(
+        err instanceof Error ? err.message : "Failed to import the selected folder."
+      );
+    } finally {
+      setIsImportingProject(false);
+    }
+  };
+
   const handleExport = (project: Project) => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
     const downloadAnchor = document.createElement("a");
@@ -367,7 +412,9 @@ export default function ProjectsDashboard() {
           onOpenNewProject={() => setIsNewProjectOpen(true)}
           onCreateEmptyProject={handleCreateEmptyProject}
           isCreatingEmpty={isCreatingEmpty}
-          onOpenImportProject={() => setIsImportProjectOpen(true)}
+          onOpenImportProject={handleImportFolder}
+          onOpenArchiveImport={() => setIsImportProjectOpen(true)}
+          isImportingProject={isImportingProject}
           projectCount={filteredProjects.length}
         />
 
@@ -535,7 +582,7 @@ export default function ProjectsDashboard() {
         }}
       />
 
-      {/* Import Existing Project Modal */}
+      {/* Import ZIP Archive Modal */}
       <ImportProjectDialog
         isOpen={isImportProjectOpen}
         onClose={() => setIsImportProjectOpen(false)}
@@ -544,6 +591,12 @@ export default function ProjectsDashboard() {
           fetchCloudProjects();
           router.push(`/editor/${id}`);
         }}
+      />
+
+      <FolderImportOverlay
+        progress={folderImportProgress}
+        error={folderImportError}
+        onDismissError={() => setFolderImportError(null)}
       />
 
       {/* Rename Project Modal */}

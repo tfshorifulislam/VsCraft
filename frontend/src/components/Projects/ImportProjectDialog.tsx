@@ -92,7 +92,7 @@ export default function ImportProjectDialog({
 }: ImportProjectDialogProps) {
   const router = useRouter();
 
-  const [activeTab, setActiveTab] = useState<"folder" | "zip">("folder");
+  const [activeTab] = useState<"folder" | "zip">("zip");
   const [selectedZip, setSelectedZip] = useState<File | null>(null);
   const [folderFiles, setFolderFiles] = useState<ProjectImportFile[]>([]);
   const [folderName, setFolderName] = useState<string>("");
@@ -253,13 +253,11 @@ export default function ImportProjectDialog({
     // If browser supports showDirectoryPicker
     if (typeof window !== "undefined" && "showDirectoryPicker" in window) {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const dirHandle = await (window as any).showDirectoryPicker();
         setIsAnalyzing(true);
         const collected: ProjectImportFile[] = [];
         let accumulatedBytes = 0;
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         async function readDir(handle: any, currentPath: string = "") {
           for await (const entry of handle.values()) {
             if (IGNORED_DIR_NAMES.has(entry.name.toLowerCase())) {
@@ -528,7 +526,6 @@ export default function ImportProjectDialog({
       <input
         ref={folderInputRef}
         type="file"
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         {...({ webkitdirectory: "", directory: "" } as any)}
         multiple
         onChange={handleFolderInputChange}
@@ -546,9 +543,9 @@ export default function ImportProjectDialog({
               <Upload className="w-3.5 h-3.5" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-neutral-900">Import Project from PC</h2>
+              <h2 className="text-sm font-semibold text-neutral-900">Import ZIP Archive</h2>
               <p className="text-[11px] text-neutral-500">
-                Load a local project folder or ZIP archive into your Code Editor.
+                Upload a .zip project archive into your Code Editor.
               </p>
             </div>
           </div>
@@ -562,41 +559,12 @@ export default function ImportProjectDialog({
           </button>
         </div>
 
-        {/* Tab switch: Local Folder vs ZIP Archive */}
-        <div className="px-5 pt-3 border-b border-[#f0f0f2] flex items-center gap-4">
-          <button
-            type="button"
-            onClick={() => {
-              if (isSubmitting) return;
-              setActiveTab("folder");
-              setError(null);
-            }}
-            className={`pb-2 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
-              activeTab === "folder"
-                ? "border-[#0d99ff] text-[#0d99ff]"
-                : "border-transparent text-neutral-500 hover:text-neutral-800"
-            }`}
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            <span>Select Local Folder</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (isSubmitting) return;
-              setActiveTab("zip");
-              setError(null);
-            }}
-            className={`pb-2 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
-              activeTab === "zip"
-                ? "border-[#0d99ff] text-[#0d99ff]"
-                : "border-transparent text-neutral-500 hover:text-neutral-800"
-            }`}
-          >
-            <FileArchive className="w-3.5 h-3.5" />
-            <span>Upload ZIP Archive</span>
-          </button>
+        <div className="px-5 py-2.5 border-b border-[#f0f0f2] flex items-center gap-2 text-[11px] text-neutral-500">
+          <FileArchive className="w-3.5 h-3.5 text-neutral-400" />
+          <span>
+            ZIP archive import. To import a local folder, close this dialog and use the Import
+            button.
+          </span>
         </div>
 
         {/* Form Content */}

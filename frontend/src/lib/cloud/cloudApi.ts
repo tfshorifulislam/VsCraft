@@ -29,6 +29,30 @@ export interface SaveResult {
   error?: string;
 }
 
+async function readJsonResponse(res: Response): Promise<Record<string, unknown>> {
+  const raw = await res.text();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function importRequestError(
+  res: Response,
+  data: Record<string, unknown>,
+  fallback: string
+): Error {
+  const detail =
+    typeof data.error === "string" && data.error.trim()
+      ? data.error.trim()
+      : res.statusText || fallback;
+  const stage = typeof data.stage === "string" ? `, ${data.stage}` : "";
+  return new Error(`${detail} (HTTP ${res.status}${stage})`);
+}
+
 export const cloudApi = {
   auth: {
     async getMe(): Promise<CloudUser | null> {
@@ -106,6 +130,8 @@ export const cloudApi = {
         createdAt: typeof p.createdAt === "string" ? new Date(p.createdAt).getTime() : p.createdAt,
         updatedAt: typeof p.updatedAt === "string" ? new Date(p.updatedAt).getTime() : p.updatedAt,
         openFileIds: typeof p.openFileIds === "string" ? JSON.parse(p.openFileIds) : p.openFileIds || [],
+        contentLazy: p.contentLazy === true,
+        loadedFileIds: Array.isArray(p.loadedFileIds) ? p.loadedFileIds : undefined,
       };
     },
 
@@ -255,6 +281,110 @@ export const cloudApi = {
       if (!res.ok) throw new Error(data.error || "Failed to import project.");
       return data;
     },
+
+    async beginFolderImport(payload: {
+      name: string;
+      description?: string;
+    }): Promise<{ project: Project }> {
+      const res = await fetch("/api/projects/import/begin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw importRequestError(res, data, "Failed to start folder import.");
+      return data as { project: Project };
+    },
+
+    async appendImportFiles(
+      projectId: string,
+      files: import("@/types/editor").ProjectImportFile[]
+    ): Promise<{ files: number; folders: number }> {
+      const res = await fetch(`/api/projects/${projectId}/import/files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ files }),
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw importRequestError(res, data, "Failed to import files.");
+      return data as { files: number; folders: number };
+    },
+
+    async appendImportChunk(
+      projectId: string,
+      payload: {
+        uploadId: string;
+        path: string;
+        name: string;
+        chunk: string;
+        index: number;
+        totalChunks: number;
+        totalChars: number;
+        isBinary: boolean;
+        mimeType: string;
+      }
+    ): Promise<{
+      complete: boolean;
+      receivedChunks: number;
+      totalChunks: number;
+      files: number;
+      folders: number;
+    }> {
+      const res = await fetch(`/api/projects/${projectId}/import/chunk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw importRequestError(res, data, "Failed to import file chunk.");
+      return data as {
+        complete: boolean;
+        receivedChunks: number;
+        totalChunks: number;
+        files: number;
+        folders: number;
+      };
+    },
+
+    async finalizeFolderImport(projectId: string): Promise<{
+      project: {
+        id: string;
+        name: string;
+        template: ProjectTemplate;
+        activeFileId: string | null;
+        openFileIds: string[];
+        fileCount: number;
+      };
+      detection: unknown;
+    }> {
+      const res = await fetch(`/api/projects/${projectId}/import/finalize`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw importRequestError(res, data, "Failed to finalize folder import.");
+      return data as {
+        project: {
+          id: string;
+          name: string;
+          template: ProjectTemplate;
+          activeFileId: string | null;
+          openFileIds: string[];
+          fileCount: number;
+        };
+        detection: unknown;
+      };
+    },
+
+    async abortFolderImport(projectId: string): Promise<void> {
+      await fetch(`/api/projects/${projectId}/import/abort`, {
+        method: "POST",
+        credentials: "include",
+      });
+    },
   },
 
   files: {
@@ -269,6 +399,20 @@ export const cloudApi = {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to create file in cloud.");
+      return data.file;
+    },
+
+    async getContent(
+      projectId: string,
+      fileId: string
+    ): Promise<Pick<ProjectFile, "id" | "name" | "path" | "content" | "version">> {
+      const res = await fetch(`/api/projects/${projectId}/files/${fileId}/content`, {
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load file content.");
+      }
       return data.file;
     },
 
