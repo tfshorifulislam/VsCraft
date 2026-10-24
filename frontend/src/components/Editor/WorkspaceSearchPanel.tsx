@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useDeferredValue, useMemo, useState } from "react";
-import { FileCode, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { Project } from "@/types/editor";
 import { WorkspaceSearchIndex } from "@/lib/search/workspaceSearch";
+import MaterialFileIcon from "./MaterialFileIcon";
 
 interface WorkspaceSearchPanelProps {
   project: Project;
@@ -75,7 +76,7 @@ function WorkspaceSearchPanel({ project, onSelectFile }: WorkspaceSearchPanelPro
               className="w-full text-left p-2 rounded hover:bg-[#2a2d2e] flex flex-col gap-0.5 transition cursor-pointer"
             >
               <span className="font-medium text-white flex items-center gap-1.5 min-w-0">
-                <FileCode className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                <MaterialFileIcon name={result.name} path={result.path} size={14} />
                 <span className="truncate">{result.path}</span>
               </span>
               {result.match === "content" && (

@@ -7,13 +7,13 @@ import {
   Trash2,
   Check,
   X,
-  FileCode,
   AlertCircle,
   HelpCircle,
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
 import { Project, ProjectFile, AIMessage, AIDiffChange } from "@/types/editor";
+import MaterialFileIcon from "./MaterialFileIcon";
 
 let msgCounter = 1;
 function getNextId(prefix: string): string {
@@ -225,7 +225,11 @@ export default function AIAssistantPanel({
       {/* Active Context Banner */}
       <div className="px-3 py-1.5 bg-[#1a1a1a] border-b border-[#2b2b2b] flex items-center justify-between text-[11px] text-neutral-400">
         <div className="flex items-center gap-1.5 truncate">
-          <FileCode className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+          <MaterialFileIcon
+            name={activeFile?.name ?? ""}
+            path={activeFile?.path ?? ""}
+            size={14}
+          />
           <span className="truncate">
             Context:{" "}
             <strong className="text-neutral-200">
@@ -283,7 +287,11 @@ export default function AIAssistantPanel({
                           ) : (
                             <ChevronRight className="w-3 h-3 text-neutral-500" />
                           )}
-                          <FileCode className="w-3.5 h-3.5 text-cyan-400" />
+                          <MaterialFileIcon
+                            name={diff.filePath}
+                            path={diff.filePath}
+                            size={14}
+                          />
                           <span>{diff.filePath}</span>
                         </div>
                         <span

@@ -1,15 +1,9 @@
 "use client";
 
 import React, { useState, type MouseEvent, type FormEvent } from "react";
-import {
-  GitBranch,
-  Plus,
-  Minus,
-  Check,
-  History,
-  FileCode,
-} from "lucide-react";
+import { GitBranch, Plus, Minus, Check, History } from "lucide-react";
 import { Project, GitCommitRecord } from "@/types/editor";
+import MaterialFileIcon from "./MaterialFileIcon";
 
 const INITIAL_COMMITS: GitCommitRecord[] = [
   {
@@ -147,7 +141,7 @@ export default function GitPanel({
                 className="flex items-center justify-between p-1.5 rounded hover:bg-[#2a2d2e] cursor-pointer group font-mono text-xs"
               >
                 <div className="flex items-center gap-2 truncate">
-                  <FileCode className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <MaterialFileIcon name={file.name} path={file.path} size={14} />
                   <span className="text-white truncate">{file.name}</span>
                   <span className="text-[10px] text-neutral-500 truncate">{file.path}</span>
                 </div>
@@ -198,7 +192,7 @@ export default function GitPanel({
                 className="flex items-center justify-between p-1.5 rounded hover:bg-[#2a2d2e] cursor-pointer group font-mono text-xs"
               >
                 <div className="flex items-center gap-2 truncate">
-                  <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <MaterialFileIcon name={file.name} path={file.path} size={14} />
                   <span className="text-neutral-200 truncate">{file.name}</span>
                   <span className="text-[10px] text-neutral-500 truncate">{file.path}</span>
                 </div>

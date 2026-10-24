@@ -10,13 +10,6 @@ import React, {
   type DragEvent,
 } from "react";
 import {
-  Folder,
-  FolderOpen,
-  FileCode,
-  FileText,
-  FileJson,
-  File,
-  FileImage,
   Plus,
   FolderPlus,
   Upload,
@@ -32,6 +25,7 @@ import {
 import { Project, ProjectFile } from "@/types/editor";
 import { buildVisibleTreeRows, findRowIndex, getVirtualWindow, type NewTreeItem } from "@/lib/tree/fileTree";
 import { getPublicRelativePath } from "./ImagePreviewer";
+import MaterialFileIcon from "./MaterialFileIcon";
 
 interface FileExplorerProps {
   project: Project;
@@ -48,48 +42,6 @@ interface FileExplorerProps {
 
 const ROW_HEIGHT = 24;
 const VIRTUAL_OVERSCAN = 8;
-
-function renderFileIcon(file: ProjectFile, isCollapsed: boolean) {
-  if (file.isFolder) {
-    return isCollapsed ? (
-      <Folder className="w-4 h-4 text-amber-400 shrink-0" />
-    ) : (
-      <FolderOpen className="w-4 h-4 text-amber-400 shrink-0" />
-    );
-  }
-
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "tsx":
-    case "jsx":
-      return <FileCode className="w-4 h-4 text-cyan-400 shrink-0" />;
-    case "ts":
-    case "js":
-      return <FileCode className="w-4 h-4 text-yellow-400 shrink-0" />;
-    case "css":
-      return <FileText className="w-4 h-4 text-blue-400 shrink-0" />;
-    case "html":
-      return <FileCode className="w-4 h-4 text-orange-400 shrink-0" />;
-    case "json":
-      return <FileJson className="w-4 h-4 text-amber-300 shrink-0" />;
-    case "md":
-      return <FileText className="w-4 h-4 text-neutral-400 shrink-0" />;
-    case "py":
-      return <FileCode className="w-4 h-4 text-emerald-400 shrink-0" />;
-    case "png":
-    case "jpg":
-    case "jpeg":
-    case "webp":
-    case "gif":
-    case "svg":
-    case "ico":
-    case "bmp":
-    case "avif":
-      return <FileImage className="w-4 h-4 text-purple-400 shrink-0" />;
-    default:
-      return <File className="w-4 h-4 text-neutral-400 shrink-0" />;
-  }
-}
 
 interface FileTreeRowProps {
   file: ProjectFile;
@@ -193,7 +145,13 @@ const FileTreeRow = React.memo(function FileTreeRow({
         ) : (
           <span className="w-3.5" />
         )}
-        {renderFileIcon(file, isCollapsed)}
+        <MaterialFileIcon
+          name={file.name}
+          path={file.path}
+          isFolder={file.isFolder}
+          isExpanded={!isCollapsed}
+          size={16}
+        />
 
         {isEditing ? (
           <input
@@ -456,11 +414,12 @@ function FileExplorer({
       }}
       className="flex items-center gap-2 pr-2 bg-[#252526]"
     >
-      {isCreating?.isFolder ? (
-        <Folder className="w-4 h-4 text-amber-400 shrink-0" />
-      ) : (
-        <File className="w-4 h-4 text-neutral-400 shrink-0" />
-      )}
+      <MaterialFileIcon
+        name={newItemName}
+        isFolder={isCreating?.isFolder}
+        isExpanded={false}
+        size={16}
+      />
       <input
         type="text"
         autoFocus

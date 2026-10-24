@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState, type ReactNode, type KeyboardEvent } from "react";
-import { Search, FileCode } from "lucide-react";
+import { Search } from "lucide-react";
 import { Project } from "@/types/editor";
+import MaterialFileIcon from "./MaterialFileIcon";
 
 export interface CommandItem {
   id: string;
@@ -44,7 +45,7 @@ export default function CommandPalette({
       id: `file-${file.id}`,
       title: file.path,
       category: "Go to File",
-      icon: <FileCode className="w-4 h-4 text-cyan-400" />,
+      icon: <MaterialFileIcon name={file.name} path={file.path} size={16} />,
       action: () => onSelectFile(file.id),
     }));
 

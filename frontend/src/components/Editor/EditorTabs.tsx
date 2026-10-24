@@ -1,14 +1,9 @@
 "use client";
 
 import React, { type MouseEvent } from "react";
-import {
-  FileCode,
-  FileText,
-  FileJson,
-  File,
-  X,
-} from "lucide-react";
+import { X } from "lucide-react";
 import { ProjectFile } from "@/types/editor";
+import MaterialFileIcon from "./MaterialFileIcon";
 
 interface EditorTabsProps {
   openFiles: ProjectFile[];
@@ -25,26 +20,6 @@ function EditorTabs({
   onSelectTab,
   onCloseTab,
 }: EditorTabsProps) {
-  const renderTabIcon = (file: ProjectFile) => {
-    const ext = file.name.split(".").pop()?.toLowerCase();
-    switch (ext) {
-      case "tsx":
-      case "jsx":
-        return <FileCode className="w-3.5 h-3.5 text-cyan-400 shrink-0" />;
-      case "ts":
-      case "js":
-        return <FileCode className="w-3.5 h-3.5 text-yellow-400 shrink-0" />;
-      case "css":
-        return <FileText className="w-3.5 h-3.5 text-blue-400 shrink-0" />;
-      case "html":
-        return <FileCode className="w-3.5 h-3.5 text-orange-400 shrink-0" />;
-      case "json":
-        return <FileJson className="w-3.5 h-3.5 text-amber-300 shrink-0" />;
-      default:
-        return <File className="w-3.5 h-3.5 text-neutral-400 shrink-0" />;
-    }
-  };
-
   return (
     <div className="h-9 bg-[#252526] border-b border-[#1e1e1e] flex items-center justify-between select-none overflow-x-auto no-scrollbar">
       {/* Tab List */}
@@ -63,7 +38,7 @@ function EditorTabs({
                   : "bg-[#2d2d2d] text-neutral-400 hover:bg-[#282828] hover:text-neutral-200"
               }`}
             >
-              {renderTabIcon(file)}
+              <MaterialFileIcon name={file.name} path={file.path} size={14} />
               <span>{file.name}</span>
 
               {/* Dirty indicator or close button */}

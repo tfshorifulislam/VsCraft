@@ -14,6 +14,9 @@
 /build
 dist
 
+# generated icon assets
+/public/material-icons/
+
 # misc
 .DS_Store
 *.pem
