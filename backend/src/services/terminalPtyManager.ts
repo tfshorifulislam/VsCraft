@@ -113,6 +113,29 @@ function getProjectSessions(projectId: string): Map<string, PtySession> {
 
 let sessionCounter = 0;
 
+function sanitizePromptProjectName(value: string | undefined): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f<>:"/\\|?*%]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 48);
+}
+
+function resolvePromptProjectName(projectName: string | undefined, workspaceRoot: string): string {
+  const fromProject = sanitizePromptProjectName(projectName);
+  if (fromProject && !/^(undefined|null)$/i.test(fromProject)) {
+    return fromProject;
+  }
+
+  const fromWorkspace = sanitizePromptProjectName(path.basename(workspaceRoot));
+  if (fromWorkspace && !/^(undefined|null)$/i.test(fromWorkspace)) {
+    return fromWorkspace;
+  }
+
+  return "project";
+}
+
 /**
  * Spawns a genuine persistent PTY shell session inside the project workspace directory.
  */
@@ -121,7 +144,8 @@ export function createPtySession(
   preferredShellType?: ShellType,
   customName?: string,
   initialCols: number = 80,
-  initialRows: number = 24
+  initialRows: number = 24,
+  projectName?: string
 ): PtySession {
   const map = getProjectSessions(projectId);
   const availableShells = getAvailableShells();
@@ -137,8 +161,7 @@ export function createPtySession(
   const sessionName = customName || `${map.size + 1}: ${shellInfo.type}`;
 
   const isWindows = process.platform === "win32";
-  // Format short project name (e.g. proj_bb78b9e7d6918ae6 -> proj_bb78b9)
-  const shortProjName = projectId.length > 11 ? projectId.slice(0, 11) : projectId;
+  const promptProjectName = resolvePromptProjectName(projectName, workspaceRoot);
   let shellArgs: string[] = [];
 
   if (isWindows) {
@@ -150,7 +173,7 @@ export function createPtySession(
         `function prompt { $p = (Get-Location).Path; $ws = $env:WORKSPACE_ROOT; $proj = $env:PROJECT_DIR_NAME; if ($ws -and $p.StartsWith($ws, [System.StringComparison]::OrdinalIgnoreCase)) { $rel = $p.Substring($ws.Length).TrimStart('\\', '/'); if ($rel) { "PS ...\\$proj\\$rel> " } else { "PS ...\\$proj> " } } else { $leaf = Split-Path $p -Leaf; if ($leaf.Length -gt 13) { $leaf = $leaf.Substring(0, 11) }; "PS ...\\$leaf> " } }`,
       ];
     } else if (shellInfo.type === "cmd") {
-      shellArgs = ["/k", `prompt ...\\${shortProjName}$G`];
+      shellArgs = ["/k", `prompt ...\\${promptProjectName}$G`];
     } else if (shellInfo.type === "bash") {
       shellArgs = ["--login", "-i"];
     }
@@ -171,9 +194,9 @@ export function createPtySession(
     rows: Math.max(initialRows, 10),
     cwd: workspaceRoot,
     env: getSanitizedWorkspaceEnv(projectId, workspaceRoot, {
-      PROJECT_DIR_NAME: shortProjName,
-      PROMPT: `...\\${shortProjName}$G`,
-      PS1: `.../${shortProjName}$ `,
+      PROJECT_DIR_NAME: promptProjectName,
+      PROMPT: `...\\${promptProjectName}$G`,
+      PS1: `.../${promptProjectName}$ `,
     }),
     useConpty: false, // winpty provides rock-solid reliability across all Windows environments
   });
@@ -256,11 +279,11 @@ export function createPtySession(
 /**
  * Returns a list of all active PTY session tabs for a project.
  */
-export function listPtySessions(projectId: string): TerminalTabInfo[] {
+export function listPtySessions(projectId: string, projectName?: string): TerminalTabInfo[] {
   const map = getProjectSessions(projectId);
 
   if (map.size === 0) {
-    createPtySession(projectId);
+    createPtySession(projectId, undefined, undefined, 80, 24, projectName);
   }
 
   const result: TerminalTabInfo[] = [];

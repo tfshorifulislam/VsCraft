@@ -694,11 +694,22 @@ router.post("/terminal-session", requireAuth, async (req: AuthenticatedRequest, 
       console.warn("WebSocket server start error:", err);
     }
 
-    const ptySession = createPtySession(project.id);
+    const ptySession = createPtySession(
+      project.id,
+      undefined,
+      undefined,
+      80,
+      24,
+      project.name
+    );
     const wsPort = getTerminalWSPort();
 
     return res.json({
       success: true,
+      projectId: project.id,
+      projectName: project.name,
+      sessionId: ptySession.id,
+      cwd: ptySession.cwd,
       project: {
         id: project.id,
         name: project.name,
@@ -959,6 +970,10 @@ router.post("/:id/finalize", requireAuth, async (req: AuthenticatedRequest, res:
 
     return res.json({
       success: true,
+      projectId: updatedProject.id,
+      projectName: updatedProject.name,
+      template: detectedTemplate,
+      redirectUrl: `/editor/${updatedProject.id}`,
       project: {
         ...updatedProject,
         createdAt: updatedProject.createdAt.getTime(),

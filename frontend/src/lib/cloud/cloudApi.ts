@@ -569,8 +569,8 @@ export const cloudApi = {
       projectId: string;
       name: string;
       cwd: string;
-      sessionId?: string;
-      wsPort?: number;
+      sessionId: string;
+      wsPort: number;
     }> {
       const res = await fetch("/api/projects/terminal-session", {
         method: "POST",
@@ -579,7 +579,20 @@ export const cloudApi = {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to initialize terminal session");
-      return data;
+
+      const projectId = data.projectId || data.project?.id;
+      const sessionId = data.sessionId || data.session?.id;
+      if (!projectId || !sessionId) {
+        throw new Error("Terminal session response was incomplete. Please try again.");
+      }
+
+      return {
+        projectId,
+        name: data.projectName || data.project?.name || data.session?.name || "cloud-project",
+        cwd: data.cwd || data.session?.cwd || "",
+        sessionId,
+        wsPort: typeof data.wsPort === "number" ? data.wsPort : 3005,
+      };
     },
 
     async executeStream(
@@ -671,7 +684,13 @@ export const cloudApi = {
     async finalize(
       projectId: string,
       payload?: { name?: string; subfolder?: string }
-    ): Promise<{ success: boolean; projectId: string; template: string; redirectUrl: string }> {
+    ): Promise<{
+      success: boolean;
+      projectId: string;
+      projectName: string;
+      template: string;
+      redirectUrl: string;
+    }> {
       const res = await fetch(`/api/projects/${projectId}/finalize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -679,7 +698,19 @@ export const cloudApi = {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to finalize project setup");
-      return data;
+
+      const finalizedProjectId = data.projectId || data.project?.id;
+      if (!finalizedProjectId) {
+        throw new Error("The server did not return a persisted project. Please try again.");
+      }
+
+      return {
+        success: data.success !== false,
+        projectId: finalizedProjectId,
+        projectName: data.projectName || data.project?.name || "cloud-project",
+        template: data.template || data.project?.template || "blank",
+        redirectUrl: data.redirectUrl || `/editor/${finalizedProjectId}`,
+      };
     },
 
     async cleanup(projectId: string): Promise<void> {

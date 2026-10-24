@@ -53,7 +53,7 @@ router.get("/:id/terminal/sessions", requireAuth, async (req: AuthenticatedReque
     console.warn("WebSocket server start error:", err);
   }
 
-  const sessions = listPtySessions(projectId);
+  const sessions = listPtySessions(projectId, project.name);
   const availableShells = getAvailableShells();
   const wsPort = getTerminalWSPort();
 
@@ -77,7 +77,7 @@ router.post("/:id/terminal/sessions", requireAuth, async (req: AuthenticatedRequ
   const shellType = req.body?.shellType as ShellType | undefined;
   const name = typeof req.body?.name === "string" ? req.body.name : undefined;
 
-  const session = createPtySession(projectId, shellType, name);
+  const session = createPtySession(projectId, shellType, name, 80, 24, project.name);
 
   return res.json({
     session: {
@@ -469,7 +469,7 @@ router.post("/:id/terminal/stream", requireAuth, async (req: AuthenticatedReques
   if (sessionId) {
     let session = getPtySession(projectId, sessionId);
     if (!session) {
-      session = createPtySession(projectId);
+      session = createPtySession(projectId, undefined, undefined, 80, 24, project.name);
     }
 
     const currentSession: PtySession = session;

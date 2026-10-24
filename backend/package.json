@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "test:import": "node -r dotenv/config scripts/import-regression.cjs",
     "test:isolation": "node -r dotenv/config scripts/project-isolation-regression.cjs",
+    "test:terminal": "node -r dotenv/config scripts/terminal-workflow-regression.cjs",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"
   },

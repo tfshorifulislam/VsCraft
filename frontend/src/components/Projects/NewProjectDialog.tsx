@@ -31,6 +31,22 @@ interface DetectedInfo {
   entryFile?: string;
 }
 
+const DEFAULT_TERMINAL_HEIGHT = 420;
+const MIN_TERMINAL_HEIGHT = 220;
+const MODAL_CHROME_HEIGHT = 172;
+const TERMINAL_HEIGHT_STORAGE_KEY = "code-editor:new-project-terminal-height";
+
+function getTerminalHeightBounds() {
+  const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+  const max = Math.max(160, Math.floor(viewportHeight * 0.85) - MODAL_CHROME_HEIGHT);
+  const min = Math.min(MIN_TERMINAL_HEIGHT, max);
+  return { min, max };
+}
+
+function clampTerminalHeight(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 export default function NewProjectDialog({
   isOpen,
   onClose,
@@ -41,6 +57,20 @@ export default function NewProjectDialog({
   // Session state
   const [projectId, setProjectId] = useState<string | null>(null);
   const [isInitializingSession, setIsInitializingSession] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    if (typeof window === "undefined") return DEFAULT_TERMINAL_HEIGHT;
+
+    const { min, max } = getTerminalHeightBounds();
+    let nextHeight = DEFAULT_TERMINAL_HEIGHT;
+    try {
+      const storedHeight = Number(localStorage.getItem(TERMINAL_HEIGHT_STORAGE_KEY));
+      if (Number.isFinite(storedHeight) && storedHeight > 0) {
+        nextHeight = storedHeight;
+      }
+    } catch {}
+    return clampTerminalHeight(nextHeight, min, max);
+  });
+  const [isResizingTerminal, setIsResizingTerminal] = useState(false);
 
   // Project detection
   const [detectedProjects, setDetectedProjects] = useState<DetectedInfo[]>([]);
@@ -53,6 +83,52 @@ export default function NewProjectDialog({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const mountTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fitFrameRef = useRef<number | null>(null);
+  const isAtBottomRef = useRef(true);
+  const terminalHeightRef = useRef(terminalHeight);
+  const terminalResizeDragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    min: number;
+    max: number;
+  } | null>(null);
+  const terminalResizeCleanupRef = useRef<(() => void) | null>(null);
+  const suppressBackdropCloseRef = useRef(false);
+  const finalizingRef = useRef(false);
+
+  const fitTerminal = useCallback(() => {
+    if (!fitAddonRef.current || !xtermRef.current) return;
+    try {
+      fitAddonRef.current.fit();
+      if (isAtBottomRef.current) {
+        xtermRef.current.scrollToBottom();
+      }
+    } catch {}
+  }, []);
+
+  const scheduleTerminalFit = useCallback(() => {
+    if (fitFrameRef.current !== null) {
+      cancelAnimationFrame(fitFrameRef.current);
+    }
+    fitFrameRef.current = requestAnimationFrame(() => {
+      fitFrameRef.current = null;
+      fitTerminal();
+    });
+  }, [fitTerminal]);
+
+  const writeTerminalChunk = useCallback((term: XTerm, data: string, forceBottom = false) => {
+    const shouldFollowOutput = forceBottom || isAtBottomRef.current;
+    if (forceBottom) {
+      isAtBottomRef.current = true;
+    }
+    term.write(data, () => {
+      if (shouldFollowOutput) {
+        term.scrollToBottom();
+      }
+    });
+  }, []);
 
   // Refresh project detection helper
   const refreshDetection = useCallback(async (targetId: string) => {
@@ -64,16 +140,59 @@ export default function NewProjectDialog({
     }
   }, []);
 
+  // Keep the terminal inside the dialog as the viewport changes.
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const onResize = () => {
+      const { min, max } = getTerminalHeightBounds();
+      const nextHeight = clampTerminalHeight(terminalHeightRef.current, min, max);
+      terminalHeightRef.current = nextHeight;
+      setTerminalHeight(nextHeight);
+      scheduleTerminalFit();
+    };
+
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [isOpen, scheduleTerminalFit]);
+
+  // Refit xterm whenever its container changes size.
+  useEffect(() => {
+    if (!isOpen || !terminalContainerRef.current || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => scheduleTerminalFit());
+    observer.observe(terminalContainerRef.current);
+    return () => observer.disconnect();
+  }, [isOpen, scheduleTerminalFit]);
+
+  useEffect(() => {
+    return () => {
+      if (fitFrameRef.current !== null) {
+        cancelAnimationFrame(fitFrameRef.current);
+        fitFrameRef.current = null;
+      }
+      terminalResizeCleanupRef.current?.();
+      terminalResizeCleanupRef.current = null;
+    };
+  }, []);
+
   // Initialize terminal session and setup genuine xterm emulator
   useEffect(() => {
     if (!isOpen) {
       // Cleanup on close
       if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
+      if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
       if (xtermRef.current) xtermRef.current.dispose();
+      detectionIntervalRef.current = null;
+      mountTimeoutRef.current = null;
       wsRef.current = null;
       xtermRef.current = null;
       fitAddonRef.current = null;
+      isAtBottomRef.current = true;
       setProjectId(null);
       setDetectedProjects([]);
       return;
@@ -86,17 +205,26 @@ export default function NewProjectDialog({
     const init = async () => {
       try {
         const session = await cloudApi.terminal.startSession("cloud-app");
-        if (!isMounted) return;
+        if (!isMounted) {
+          await cloudApi.terminal.cleanup(session.projectId).catch(() => {});
+          return;
+        }
 
-        setProjectId(session.projectId);
-        const sessId = session.sessionId || `pty_init_${Date.now()}`;
+        const sessionProjectId = session.projectId;
+        const sessId = session.sessionId;
+        if (!sessionProjectId || !sessId) {
+          throw new Error("Terminal session did not return a project and session ID.");
+        }
+
+        setProjectId(sessionProjectId);
         setIsInitializingSession(false);
 
         // Mount xterm after container element is rendered
-        setTimeout(() => {
+        mountTimeoutRef.current = setTimeout(() => {
           if (!isMounted || !terminalContainerRef.current) return;
 
           terminalContainerRef.current.innerHTML = "";
+          isAtBottomRef.current = true;
 
           const term = new XTerm({
             cursorBlink: true,
@@ -141,17 +269,24 @@ export default function NewProjectDialog({
           term.open(terminalContainerRef.current);
           try {
             fitAddon.fit();
+            term.scrollToBottom();
             term.focus();
           } catch {}
 
           xtermRef.current = term;
           fitAddonRef.current = fitAddon;
+          isAtBottomRef.current = true;
+
+          term.onScroll(() => {
+            const buffer = term.buffer.active;
+            isAtBottomRef.current = buffer.viewportY >= buffer.baseY;
+          });
 
           // Connect WebSocket to persistent PTY process
           const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
           const hostname = window.location.hostname || "localhost";
           const wsPort = session.wsPort || 3005;
-          const wsUrl = `${protocol}//${hostname}:${wsPort}?projectId=${encodeURIComponent(session.projectId)}&sessionId=${encodeURIComponent(sessId)}`;
+          const wsUrl = `${protocol}//${hostname}:${wsPort}?projectId=${encodeURIComponent(sessionProjectId)}&sessionId=${encodeURIComponent(sessId)}`;
 
           let hasReceivedInitBuffer = false;
           let ws: WebSocket | null = null;
@@ -182,11 +317,11 @@ export default function NewProjectDialog({
                 if (msg.type === "init") {
                   if (msg.buffer && !hasReceivedInitBuffer) {
                     hasReceivedInitBuffer = true;
-                    term.write(msg.buffer);
+                    writeTerminalChunk(term, msg.buffer, true);
                   }
                 } else if (msg.type === "output" && typeof msg.data === "string") {
-                  term.write(msg.data);
-                  refreshDetection(session.projectId);
+                  writeTerminalChunk(term, msg.data);
+                  refreshDetection(sessionProjectId);
                 }
               } catch (e) {
                 console.warn("WS parse error:", e);
@@ -198,7 +333,7 @@ export default function NewProjectDialog({
               if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "input", data }));
               } else {
-                cloudApi.terminal.sendSessionInput(session.projectId, sessId, data);
+                cloudApi.terminal.sendSessionInput(sessionProjectId, sessId, data);
               }
             });
 
@@ -224,12 +359,12 @@ export default function NewProjectDialog({
           }
 
           // Initial detection check
-          refreshDetection(session.projectId);
+          refreshDetection(sessionProjectId);
 
           // Periodic detection check every 2.5 seconds
           detectionIntervalRef.current = setInterval(() => {
-            if (session.projectId) {
-              refreshDetection(session.projectId);
+            if (sessionProjectId) {
+              refreshDetection(sessionProjectId);
             }
           }, 2500);
         }, 50);
@@ -246,30 +381,91 @@ export default function NewProjectDialog({
     return () => {
       isMounted = false;
       if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
+      if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
       if (xtermRef.current) xtermRef.current.dispose();
+      detectionIntervalRef.current = null;
+      mountTimeoutRef.current = null;
       wsRef.current = null;
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [isOpen, refreshDetection]);
+  }, [isOpen, refreshDetection, writeTerminalChunk]);
 
-  // Window resize handler
-  useEffect(() => {
-    const onResize = () => {
-      if (fitAddonRef.current) {
-        try {
-          fitAddonRef.current.fit();
-        } catch {}
-      }
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+  const persistTerminalHeight = useCallback(() => {
+    try {
+      localStorage.setItem(TERMINAL_HEIGHT_STORAGE_KEY, String(terminalHeightRef.current));
+    } catch {}
   }, []);
+
+  const handleTerminalResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+
+    const { min, max } = getTerminalHeightBounds();
+    terminalResizeDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: terminalHeightRef.current,
+      min,
+      max,
+    };
+
+    terminalResizeCleanupRef.current?.();
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    setIsResizingTerminal(true);
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const drag = terminalResizeDragRef.current;
+      if (!drag || drag.pointerId !== moveEvent.pointerId) return;
+
+      const nextHeight = clampTerminalHeight(
+        drag.startHeight + drag.startY - moveEvent.clientY,
+        drag.min,
+        drag.max
+      );
+      terminalHeightRef.current = nextHeight;
+      setTerminalHeight(nextHeight);
+      scheduleTerminalFit();
+    };
+
+    const finishResize = () => {
+      terminalResizeDragRef.current = null;
+      setIsResizingTerminal(false);
+      persistTerminalHeight();
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", finishResize);
+      window.removeEventListener("pointercancel", finishResize);
+      window.removeEventListener("blur", finishResize);
+      terminalResizeCleanupRef.current = null;
+
+      suppressBackdropCloseRef.current = true;
+      window.setTimeout(() => {
+        suppressBackdropCloseRef.current = false;
+      }, 250);
+    };
+
+    terminalResizeCleanupRef.current = finishResize;
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
+    window.addEventListener("blur", finishResize);
+    event.preventDefault();
+  };
 
   // Finalize and Open in Editor
   const handleOpenProjectInEditor = async () => {
-    if (!projectId) return;
+    if (finalizingRef.current) return;
+    if (!projectId) {
+      setErrorMsg("The project session is still starting. Please wait a moment and try again.");
+      return;
+    }
+
+    finalizingRef.current = true;
     setIsFinalizing(true);
     setErrorMsg(null);
 
@@ -282,21 +478,30 @@ export default function NewProjectDialog({
         subfolder,
       });
 
+      if (!result.projectId) {
+        throw new Error("The project could not be saved. Please try again.");
+      }
+
       onClose();
+      setIsFinalizing(false);
+      finalizingRef.current = false;
       if (onCreated) {
         onCreated(result.projectId);
       } else {
-        router.push(result.redirectUrl || `/editor/${result.projectId}`);
+        router.push(result.redirectUrl || `/editor/${encodeURIComponent(result.projectId)}`);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to finalize project setup";
       setErrorMsg(msg);
       setIsFinalizing(false);
+      finalizingRef.current = false;
     }
   };
 
   // Safe Cancel and Cleanup
   const handleCancel = async () => {
+    if (finalizingRef.current) return;
+
     if (projectId) {
       if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
       if (wsRef.current) wsRef.current.close();
@@ -326,7 +531,15 @@ export default function NewProjectDialog({
 
   return (
     <div
-      onClick={handleCancel}
+      onClick={(event) => {
+        if (suppressBackdropCloseRef.current) {
+          suppressBackdropCloseRef.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        handleCancel();
+      }}
       className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-150 font-sans"
     >
       <div
@@ -346,10 +559,28 @@ export default function NewProjectDialog({
           </button>
         </div>
 
+        <div
+          role="separator"
+          aria-label="Resize terminal panel"
+          aria-orientation="horizontal"
+          title="Drag to resize terminal"
+          onPointerDown={handleTerminalResizeStart}
+          className={`h-2.5 shrink-0 flex items-center justify-center bg-[#161822] border-b border-neutral-800 touch-none select-none ${
+            isResizingTerminal ? "cursor-ns-resize" : "cursor-ns-resize hover:bg-neutral-800"
+          }`}
+        >
+          <div
+            className={`w-10 h-1 rounded-full transition-colors ${
+              isResizingTerminal ? "bg-[var(--color-primary)]" : "bg-neutral-600"
+            }`}
+          />
+        </div>
+
         {/* Pure xterm.js Terminal Window Container */}
         <div
           onContextMenu={handleContextMenu}
-          className="flex-1 min-h-[360px] max-h-[520px] p-2.5 bg-[#0c0d14] relative overflow-hidden cursor-text select-text"
+          style={{ height: terminalHeight }}
+          className="shrink-0 min-h-0 p-2.5 bg-[#0c0d14] relative overflow-hidden cursor-text select-text"
           onClick={() => xtermRef.current?.focus()}
         >
           {isInitializingSession && (
@@ -386,10 +617,10 @@ export default function NewProjectDialog({
 
             <button
               type="button"
-              disabled={!hasFiles || isFinalizing}
+              disabled={!hasFiles || !projectId || isInitializingSession || isFinalizing}
               onClick={handleOpenProjectInEditor}
               className={`px-4 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md ${
-                hasFiles
+                hasFiles && projectId
                   ? "bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white"
                   : "bg-neutral-800 text-neutral-500 cursor-not-allowed"
               }`}
@@ -401,7 +632,7 @@ export default function NewProjectDialog({
                 </>
               ) : (
                 <>
-                  <span>Open in Editor</span>
+                  <span>Open Editor</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </>
               )}
