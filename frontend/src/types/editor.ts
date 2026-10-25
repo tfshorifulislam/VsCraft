@@ -97,6 +97,32 @@ export interface Project {
   updatedAt: number;
 }
 
+export type EditorSplitDirection = "right" | "down";
+export type EditorSplitOrientation = "horizontal" | "vertical";
+
+export interface EditorGroup {
+  id: string;
+  fileIds: string[];
+  activeFileId: string | null;
+}
+
+export type EditorLayoutNode =
+  | { type: "group"; groupId: string }
+  | {
+      type: "split";
+      id: string;
+      orientation: EditorSplitOrientation;
+      ratio: number;
+      first: EditorLayoutNode;
+      second: EditorLayoutNode;
+    };
+
+export interface EditorGroupsState {
+  groups: EditorGroup[];
+  activeGroupId: string;
+  layout: EditorLayoutNode;
+}
+
 export interface EditorSettings {
   theme: "vs-dark" | "light";
   fontSize: number;

@@ -153,7 +153,14 @@ function MonacoEditorComponent({
   const activeFileIdRef = useRef<string | null>(activeFile?.id || null);
   const lastProjectFilesRef = useRef<string>("");
   const lastKnownContentRef = useRef<string>(activeFile?.content || "");
+  const onSaveRef = useRef(onSave);
+  const onCursorChangeRef = useRef(onCursorChange);
   const isLargeFile = activeFile ? isLargeFileContent(activeFile.content) : false;
+
+  useEffect(() => {
+    onSaveRef.current = onSave;
+    onCursorChangeRef.current = onCursorChange;
+  }, [onSave, onCursorChange]);
 
   const handleEditorChange = (value: string | undefined) => {
     const val = value || "";
@@ -200,14 +207,12 @@ function MonacoEditorComponent({
 
     // Register Save command
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      onSave();
+      onSaveRef.current();
     });
 
     // Listen to cursor position changes
     editor.onDidChangeCursorPosition((e) => {
-      if (onCursorChange) {
-        onCursorChange(e.position.lineNumber, e.position.column);
-      }
+      onCursorChangeRef.current?.(e.position.lineNumber, e.position.column);
     });
 
     editor.updateOptions(buildEditorOptions(settings, isLargeFile));
@@ -350,6 +355,7 @@ function MonacoEditorComponent({
         language={isLargeFile ? "plaintext" : getLanguage(activeFile)}
         path={fileUriString}
         defaultValue={activeFile.content}
+        keepCurrentModel
         onChange={handleEditorChange}
         beforeMount={handleBeforeMount}
         onMount={handleEditorMount}

@@ -13,8 +13,9 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ActivityBar from "./ActivityBar";
 import FileExplorer from "./FileExplorer";
-import EditorTabs from "./EditorTabs";
-import MonacoEditorComponent from "./MonacoEditor";
+import EditorGroupPane from "./EditorGroupPane";
+import EditorSplitLayout from "./EditorSplitLayout";
+import EditorTabContextMenu from "./EditorTabContextMenu";
 import StatusBar from "./StatusBar";
 import CommandPalette, { CommandItem } from "./CommandPalette";
 import GitPanel from "./GitPanel";
@@ -30,7 +31,22 @@ import {
   BottomTab,
   EditorSettings,
   ConsoleMessage,
+  EditorGroupsState,
+  EditorSplitDirection,
 } from "@/types/editor";
+import {
+  closeEditorFileInGroup,
+  closeEditorGroup,
+  createEditorGroups,
+  focusEditorGroup,
+  getEditorGroup,
+  isEditorFileOpenInGroup,
+  moveEditorFileBetweenGroups,
+  openEditorFileInGroup,
+  removeEditorFiles,
+  resizeEditorSplit,
+  splitEditorGroup,
+} from "@/lib/editor/editorGroups";
 import {
   loadEditorSettings,
   saveEditorSettings,
@@ -53,6 +69,8 @@ import {
   AlertCircle,
   ChevronRight,
   ExternalLink,
+  Columns2,
+  Rows2,
 } from "lucide-react";
 
 const TerminalPanel = dynamic(() => import("./TerminalPanel"), {
@@ -87,10 +105,13 @@ interface EditorLayoutProps {
 
 export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const router = useRouter();
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const saveTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const persistedTabsRef = useRef<string | null>(null);
   const loadedFileIdsRef = useRef<Set<string>>(new Set());
   const inMemoryFileContentsRef = useRef<Map<string, string>>(new Map());
+  const unsavedFilesRef = useRef<Record<string, boolean>>({});
+  const activeProjectRef = useRef<Project | null>(null);
+  const editorGroupsRef = useRef<EditorGroupsState | null>(null);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved" | "error">("saved");
 
   // 1. Core Cloud Project State
@@ -99,6 +120,15 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
   const [projectsList, setProjectsList] = useState<Project[]>([]);
   const [unsavedFiles, setUnsavedFiles] = useState<Record<string, boolean>>({});
+
+  // 1b. Split editor groups
+  const [editorGroups, setEditorGroups] = useState<EditorGroupsState | null>(null);
+  const [tabContextMenu, setTabContextMenu] = useState<{
+    groupId: string;
+    fileId: string | null;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // 2. Views & Panels
   const [activeSidebarView, setActiveSidebarView] = useState<SidebarView | null>("explorer");
@@ -117,6 +147,24 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([]);
   const [hasOpenedTerminal, setHasOpenedTerminal] = useState(false);
 
+  useEffect(() => {
+    activeProjectRef.current = activeProject;
+  }, [activeProject]);
+
+  useEffect(() => {
+    editorGroupsRef.current = editorGroups;
+  }, [editorGroups]);
+
+  useEffect(() => {
+    const saveTimeouts = saveTimeoutsRef.current;
+    return () => {
+      for (const timeout of saveTimeouts.values()) {
+        clearTimeout(timeout);
+      }
+      saveTimeouts.clear();
+    };
+  }, []);
+
   // Fetch full cloud project when initialProjectId changes
   useEffect(() => {
     if (!initialProjectId) {
@@ -126,6 +174,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
 
     let isCancelled = false;
     persistedTabsRef.current = null;
+    for (const timeout of saveTimeoutsRef.current.values()) {
+      clearTimeout(timeout);
+    }
+    saveTimeoutsRef.current.clear();
+    inMemoryFileContentsRef.current.clear();
+    setUnsavedFiles({});
+    setEditorGroups(null);
+    setTabContextMenu(null);
     setIsLoadingProject(true);
     setProjectLoadError(null);
     setIsPreviewOpen(false);
@@ -206,6 +262,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           openFileIds: validOpenIds,
           loadedFileIds: [...loadedFileIdsRef.current],
         });
+        setEditorGroups(createEditorGroups(validOpenIds, activeId));
 
         // Also load cloud projects list for project switcher modal
         cloudApi.projects
@@ -255,22 +312,33 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     return map;
   }, [activeProject?.files]);
 
-  const activeFile =
-    (activeProject?.activeFileId && filesById.get(activeProject.activeFileId)) || null;
-
-  const openFiles = useMemo(
-    () =>
-      (activeProject?.openFileIds || [])
-        .map((id) => filesById.get(id))
-        .filter((file): file is ProjectFile => !!file && !file.isFolder),
-    [activeProject?.openFileIds, filesById]
+  const resolveProjectFile = useCallback(
+    (fileId: string | null | undefined): ProjectFile | null => {
+      if (!fileId) return null;
+      const file = filesById.get(fileId);
+      if (!file || file.isFolder) return null;
+      const buffered = inMemoryFileContentsRef.current.get(fileId);
+      if (buffered !== undefined && buffered !== file.content) {
+        return { ...file, content: buffered };
+      }
+      return file;
+    },
+    [filesById]
   );
 
-  // Persist the open tabs and active file so imported projects reopen where the
-  // user left off. The first render after loading is skipped to avoid a write.
+  const activeGroup =
+    editorGroups?.groups.find((group) => group.id === editorGroups.activeGroupId) ||
+    editorGroups?.groups[0] ||
+    null;
+  const primaryGroup = editorGroups?.groups[0] || null;
+  const activeGroupId = activeGroup?.id || null;
+  const activeFile = resolveProjectFile(activeGroup?.activeFileId);
+
+  // Persist the first group's tabs with the project so normal single-editor
+  // sessions reopen exactly where the user left off.
   const tabsProjectId = activeProject?.id;
-  const tabsActiveFileId = activeProject?.activeFileId;
-  const tabsOpenFileIds = activeProject?.openFileIds;
+  const tabsActiveFileId = primaryGroup?.activeFileId ?? null;
+  const tabsOpenFileIds = primaryGroup?.fileIds;
 
   useEffect(() => {
     if (!tabsProjectId || !tabsOpenFileIds) return;
@@ -295,12 +363,13 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   // Save implementation: writes to database and physical filesystem
   const performCloudSave = useCallback(
     async (fileId: string, content: string) => {
-      if (!activeProject) return;
+      const currentProject = activeProjectRef.current;
+      if (!currentProject) return;
       setSaveStatus("saving");
       try {
-        const currentVersion = activeProject.files.find((file) => file.id === fileId)?.version;
+        const currentVersion = currentProject.files.find((file) => file.id === fileId)?.version;
         const res = await cloudApi.files.saveContent(
-          activeProject.id,
+          currentProject.id,
           fileId,
           content,
           currentVersion
@@ -353,52 +422,81 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         ]);
       }
     },
-    [activeProject]
+    []
   );
 
-  const handleContentChange = useCallback(
-    (newContent: string) => {
-      if (!activeProject || !activeFile) return;
+  const clearSaveTimeout = useCallback((fileId: string) => {
+    const timeout = saveTimeoutsRef.current.get(fileId);
+    if (timeout) {
+      clearTimeout(timeout);
+      saveTimeoutsRef.current.delete(fileId);
+    }
+  }, []);
 
-      inMemoryFileContentsRef.current.set(activeFile.id, newContent);
+  const handleFileContentChange = useCallback(
+    (fileId: string, newContent: string) => {
+      const project = activeProjectRef.current;
+      if (!project?.files.some((file) => file.id === fileId && !file.isFolder)) return;
+
+      inMemoryFileContentsRef.current.set(fileId, newContent);
       setSaveStatus("unsaved");
-      setUnsavedFiles((prev) => (prev[activeFile.id] ? prev : { ...prev, [activeFile.id]: true }));
+      setUnsavedFiles((prev) => (prev[fileId] ? prev : { ...prev, [fileId]: true }));
 
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-      saveTimeoutRef.current = setTimeout(() => {
-        const latest = inMemoryFileContentsRef.current.get(activeFile.id) ?? newContent;
-        performCloudSave(activeFile.id, latest);
+      clearSaveTimeout(fileId);
+      const timeout = setTimeout(() => {
+        saveTimeoutsRef.current.delete(fileId);
+        const latest = inMemoryFileContentsRef.current.get(fileId) ?? newContent;
+        performCloudSave(fileId, latest);
       }, 1000);
+      saveTimeoutsRef.current.set(fileId, timeout);
     },
-    [activeProject, activeFile, performCloudSave]
+    [clearSaveTimeout, performCloudSave]
+  );
+
+  const handleSaveFile = useCallback(
+    (fileId: string) => {
+      const project = activeProjectRef.current;
+      const file = project?.files.find((candidate) => candidate.id === fileId);
+      if (!project || !file || file.isFolder) return;
+
+      clearSaveTimeout(fileId);
+      const latest = inMemoryFileContentsRef.current.get(fileId) ?? file.content;
+      performCloudSave(fileId, latest);
+      setConsoleMessages((prev) => [
+        ...prev,
+        {
+          id: getEditorUniqueId("c"),
+          type: "info",
+          content: `Saved ${file.path}`,
+          timestamp: getTimestamp(),
+        },
+      ]);
+    },
+    [clearSaveTimeout, performCloudSave]
   );
 
   const handleSaveActiveFile = useCallback(() => {
-    if (!activeProject || !activeFile) return;
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-
-    const latest = inMemoryFileContentsRef.current.get(activeFile.id) ?? activeFile.content;
-    performCloudSave(activeFile.id, latest);
-    setConsoleMessages((prev) => [
-      ...prev,
-      {
-        id: getEditorUniqueId("c"),
-        type: "info",
-        content: `✓ Saved ${activeFile.path}`,
-        timestamp: getTimestamp(),
-      },
-    ]);
-  }, [activeProject, activeFile, performCloudSave]);
+    if (!activeFile) return;
+    handleSaveFile(activeFile.id);
+  }, [activeFile, handleSaveFile]);
 
   const handleSelectFile = useCallback(
-    async (fileId: string) => {
-      if (!activeProject) return;
-      const file = activeProject.files.find((f) => f.id === fileId);
+    async (fileId: string, targetGroupId?: string) => {
+      const project = activeProjectRef.current;
+      const groups = editorGroupsRef.current;
+      if (!project || !groups) return;
+
+      const file = project.files.find((candidate) => candidate.id === fileId);
       if (!file || file.isFolder) return;
+
+      const groupId = targetGroupId || groups.activeGroupId;
+      const group = getEditorGroup(groups, groupId);
+      if (!group) return;
 
       if (!loadedFileIdsRef.current.has(fileId)) {
         try {
-          const loaded = await cloudApi.files.getContent(activeProject.id, fileId, file.version);
+          const loaded = await cloudApi.files.getContent(project.id, fileId, file.version);
+          if (activeProjectRef.current?.id !== project.id) return;
           loadedFileIdsRef.current.add(fileId);
           setActiveProject((prev) => {
             if (!prev) return null;
@@ -432,84 +530,58 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         }
       }
 
-      // If switching away from an unsaved file, flush save immediately
-      if (activeFile && unsavedFiles[activeFile.id]) {
-        const latest = inMemoryFileContentsRef.current.get(activeFile.id) ?? activeFile.content;
-        performCloudSave(activeFile.id, latest);
+      if (group.activeFileId && unsavedFilesRef.current[group.activeFileId]) {
+        handleSaveFile(group.activeFileId);
       }
 
-      const nextOpen = activeProject.openFileIds.includes(fileId)
-        ? activeProject.openFileIds
-        : [...activeProject.openFileIds, fileId];
-
-      setActiveProject((prev) => {
-        if (!prev) return null;
-        // Merge any in-memory buffer edits into files
-        const mergedFiles = prev.files.map((f) => {
-          if (inMemoryFileContentsRef.current.has(f.id)) {
-            return { ...f, content: inMemoryFileContentsRef.current.get(f.id)! };
-          }
-          return f;
-        });
-        return {
-          ...prev,
-          files: mergedFiles,
-          activeFileId: fileId,
-          openFileIds: nextOpen,
-          updatedAt: getTimestamp(),
-        };
-      });
+      setEditorGroups((prev) =>
+        prev ? openEditorFileInGroup(prev, groupId, fileId) : prev
+      );
     },
-    [activeProject, activeFile, unsavedFiles, performCloudSave]
+    [handleSaveFile]
   );
 
-  const handleCloseTab = (fileId: string, e: MouseEvent) => {
+  const closeTabInGroup = useCallback(
+    (groupId: string, fileId: string) => {
+      const project = activeProjectRef.current;
+      const groups = editorGroupsRef.current;
+      if (!project || !groups) return;
+
+      const group = getEditorGroup(groups, groupId);
+      if (!group || !group.fileIds.includes(fileId)) return;
+
+      const isOpenElsewhere = isEditorFileOpenInGroup(groups.groups, fileId, groupId);
+      const closingFile = project.files.find((file) => file.id === fileId);
+      clearSaveTimeout(fileId);
+
+      if (!isOpenElsewhere) {
+        if (unsavedFilesRef.current[fileId] && closingFile) {
+          const latest = inMemoryFileContentsRef.current.get(fileId) ?? closingFile.content;
+          performCloudSave(fileId, latest);
+        } else if (closingFile) {
+          fileContentCache.set(project.id, fileId, closingFile.content, closingFile.version);
+          loadedFileIdsRef.current.delete(fileId);
+        }
+
+        inMemoryFileContentsRef.current.delete(fileId);
+        setUnsavedFiles((prev) => {
+          if (!prev[fileId]) return prev;
+          const copy = { ...prev };
+          delete copy[fileId];
+          return copy;
+        });
+      }
+
+      setEditorGroups((prev) =>
+        prev ? closeEditorFileInGroup(prev, groupId, fileId) : prev
+      );
+    },
+    [clearSaveTimeout, performCloudSave]
+  );
+
+  const handleCloseTab = (groupId: string, fileId: string, e: MouseEvent) => {
     e.stopPropagation();
-    if (!activeProject) return;
-
-    // If tab being closed has unsaved changes, flush save
-    const closingFile = activeProject.files.find((f) => f.id === fileId);
-    const shouldEvict = !!closingFile && !unsavedFiles[fileId];
-    if (closingFile && unsavedFiles[fileId]) {
-      const latest = inMemoryFileContentsRef.current.get(fileId) ?? closingFile.content;
-      performCloudSave(fileId, latest);
-    }
-    if (closingFile && shouldEvict) {
-      fileContentCache.set(activeProject.id, fileId, closingFile.content, closingFile.version);
-      loadedFileIdsRef.current.delete(fileId);
-    }
-    inMemoryFileContentsRef.current.delete(fileId);
-
-    const nextOpen = activeProject.openFileIds.filter((id) => id !== fileId);
-    let nextActive = activeProject.activeFileId;
-
-    if (activeProject.activeFileId === fileId) {
-      nextActive = nextOpen.length > 0 ? nextOpen[nextOpen.length - 1] : null;
-    }
-
-    setUnsavedFiles((prev) => {
-      const copy = { ...prev };
-      delete copy[fileId];
-      return copy;
-    });
-
-    setActiveProject((prev) => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        files: shouldEvict
-          ? prev.files.map((file) =>
-              file.id === fileId ? { ...file, content: "" } : file
-            )
-          : prev.files,
-        loadedFileIds: shouldEvict
-          ? prev.loadedFileIds?.filter((id) => id !== fileId)
-          : prev.loadedFileIds,
-        activeFileId: nextActive,
-        openFileIds: nextOpen,
-        updatedAt: getTimestamp(),
-      };
-    });
+    closeTabInGroup(groupId, fileId);
   };
 
   const handleCreateFile = async (name: string, isFolder: boolean, parentId: string | null) => {
@@ -535,13 +607,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         }
         setActiveProject((prev) => {
           if (!prev) return null;
-          const nextFiles = [...prev.files, serverFile];
-          const nextOpen = isFolder ? prev.openFileIds : [...prev.openFileIds, serverFile.id];
           return {
             ...prev,
-            files: nextFiles,
-            openFileIds: nextOpen,
-            activeFileId: isFolder ? prev.activeFileId : serverFile.id,
+            files: [...prev.files, serverFile],
             loadedFileIds:
               isFolder || !prev.loadedFileIds
                 ? prev.loadedFileIds
@@ -549,6 +617,11 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
             updatedAt: getTimestamp(),
           };
         });
+        if (!isFolder) {
+          setEditorGroups((prev) =>
+            prev ? openEditorFileInGroup(prev, prev.activeGroupId, serverFile.id) : prev
+          );
+        }
       }
     } catch (err) {
       console.error("Cloud file creation error:", err);
@@ -607,25 +680,25 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       for (const id of toDeleteIds) {
         fileContentCache.delete(activeProject.id, id);
         loadedFileIdsRef.current.delete(id);
+        clearSaveTimeout(id);
+        inMemoryFileContentsRef.current.delete(id);
       }
+      setUnsavedFiles((prev) => {
+        const next = { ...prev };
+        for (const id of toDeleteIds) delete next[id];
+        return next;
+      });
 
       setActiveProject((prev) => {
         if (!prev) return null;
-        const nextFiles = prev.files.filter((f) => !toDeleteIds.has(f.id));
-        const nextOpen = prev.openFileIds.filter((id) => !toDeleteIds.has(id));
-        const nextActive = toDeleteIds.has(prev.activeFileId || "")
-          ? nextOpen[nextOpen.length - 1] || null
-          : prev.activeFileId;
-
         return {
           ...prev,
-          files: nextFiles,
-          openFileIds: nextOpen,
-          activeFileId: nextActive,
+          files: prev.files.filter((f) => !toDeleteIds.has(f.id)),
           loadedFileIds: prev.loadedFileIds?.filter((id) => !toDeleteIds.has(id)),
           updatedAt: getTimestamp(),
         };
       });
+      setEditorGroups((prev) => (prev ? removeEditorFiles(prev, toDeleteIds) : prev));
     } catch (err) {
       console.error("File delete error:", err);
     }
@@ -673,20 +746,12 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           for (const u of uploadedFiles) map.set(u.path, u);
           const nextFiles = Array.from(map.values());
 
-          const first = uploadedFiles[0];
-          const nextOpen =
-            first && !first.isFolder && !prev.openFileIds.includes(first.id)
-              ? [...prev.openFileIds, first.id]
-              : prev.openFileIds;
-
           const uploadedIds = uploadedFiles
             .filter((file) => !file.isFolder)
             .map((file) => file.id);
           return {
             ...prev,
             files: nextFiles,
-            openFileIds: nextOpen,
-            activeFileId: first && !first.isFolder ? first.id : prev.activeFileId,
             loadedFileIds: prev.loadedFileIds
               ? [...new Set([...prev.loadedFileIds, ...uploadedIds])]
               : prev.loadedFileIds,
@@ -694,12 +759,21 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           };
         });
 
+        const firstUploadedFile = uploadedFiles.find((file) => !file.isFolder);
+        if (firstUploadedFile) {
+          setEditorGroups((prev) =>
+            prev
+              ? openEditorFileInGroup(prev, prev.activeGroupId, firstUploadedFile.id)
+              : prev
+          );
+        }
+
         setConsoleMessages((prev) => [
           ...prev,
           {
             id: getEditorUniqueId("up_done"),
             type: "info",
-            content: `✓ Successfully uploaded ${uploadedFiles.length} file(s) to cloud workspace.`,
+            content: `âœ“ Successfully uploaded ${uploadedFiles.length} file(s) to cloud workspace.`,
             timestamp: getTimestamp(),
           },
         ]);
@@ -729,7 +803,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       {
         id: getEditorUniqueId("ai"),
         type: "info",
-        content: `✓ AI Diff applied and saved to ${targetFile.path}`,
+        content: `âœ“ AI Diff applied and saved to ${targetFile.path}`,
         timestamp: getTimestamp(),
       },
     ]);
@@ -747,14 +821,100 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     ]);
   };
 
-  const unsavedFilesRef = useRef<Record<string, boolean>>({});
   useEffect(() => {
     unsavedFilesRef.current = unsavedFiles;
   }, [unsavedFiles]);
 
-  const handleCursorChange = useCallback((line: number, column: number) => {
-    setCursorPos({ line, column });
+  const handleFocusGroup = useCallback((groupId: string) => {
+    setEditorGroups((prev) => (prev ? focusEditorGroup(prev, groupId) : prev));
   }, []);
+
+  const handleCursorChange = useCallback((groupId: string, line: number, column: number) => {
+    if (groupId === editorGroupsRef.current?.activeGroupId) {
+      setCursorPos({ line, column });
+    }
+  }, []);
+
+  const handleSplitGroup = useCallback(
+    (groupId: string, direction: EditorSplitDirection) => {
+      setTabContextMenu(null);
+      setEditorGroups((prev) =>
+        prev ? splitEditorGroup(prev, groupId, direction) : prev
+      );
+    },
+    []
+  );
+
+  const handleCloseGroup = useCallback(
+    (groupId: string) => {
+      const project = activeProjectRef.current;
+      const groups = editorGroupsRef.current;
+      if (!project || !groups || groups.groups.length <= 1) return;
+
+      const group = getEditorGroup(groups, groupId);
+      if (!group) return;
+
+      const remainingGroups = groups.groups.filter((candidate) => candidate.id !== groupId);
+      const remainingFileIds = new Set(remainingGroups.flatMap((candidate) => candidate.fileIds));
+
+      for (const fileId of group.fileIds) {
+        if (remainingFileIds.has(fileId)) continue;
+        clearSaveTimeout(fileId);
+        const file = project.files.find((candidate) => candidate.id === fileId);
+        if (file && unsavedFilesRef.current[fileId]) {
+          const latest = inMemoryFileContentsRef.current.get(fileId) ?? file.content;
+          performCloudSave(fileId, latest);
+        } else if (file) {
+          fileContentCache.set(project.id, fileId, file.content, file.version);
+          loadedFileIdsRef.current.delete(fileId);
+        }
+        inMemoryFileContentsRef.current.delete(fileId);
+      }
+
+      setUnsavedFiles((prev) => {
+        const next = { ...prev };
+        for (const fileId of group.fileIds) {
+          if (!remainingFileIds.has(fileId)) delete next[fileId];
+        }
+        return next;
+      });
+      setTabContextMenu(null);
+      setEditorGroups((prev) => (prev ? closeEditorGroup(prev, groupId) : prev));
+    },
+    [clearSaveTimeout, performCloudSave]
+  );
+
+  const handleMoveTab = useCallback(
+    (sourceGroupId: string, fileId: string, targetGroupId: string) => {
+      setEditorGroups((prev) =>
+        prev
+          ? moveEditorFileBetweenGroups(prev, sourceGroupId, targetGroupId, fileId)
+          : prev
+      );
+    },
+    []
+  );
+
+  const handleResizeEditorSplit = useCallback((splitId: string, ratio: number) => {
+    setEditorGroups((prev) => (prev ? resizeEditorSplit(prev, splitId, ratio) : prev));
+  }, []);
+
+  const handleTabContextMenu = useCallback(
+    (groupId: string, fileId: string | null, event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setEditorGroups((prev) => (prev ? focusEditorGroup(prev, groupId) : prev));
+      setTabContextMenu({
+        groupId,
+        fileId,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    []
+  );
+
+  const closeTabContextMenu = useCallback(() => setTabContextMenu(null), []);
 
   const handleClearConsole = useCallback(() => {
     setConsoleMessages([]);
@@ -784,15 +944,10 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     }
     setActiveProject((prev) => {
       if (!prev) return null;
-      const currentActiveId = prev.activeFileId;
-      // Do not overwrite any file that has pending in-memory edits or unsaved state
+      // Do not overwrite any file that has pending in-memory edits.
       const merged = updatedFiles.map((newFile) => {
         if (inMemoryFileContentsRef.current.has(newFile.id)) {
           return { ...newFile, content: inMemoryFileContentsRef.current.get(newFile.id)! };
-        }
-        if (newFile.id === currentActiveId && unsavedFilesRef.current[currentActiveId]) {
-          const currentFile = prev.files.find((f) => f.id === currentActiveId);
-          return currentFile || newFile;
         }
         return newFile;
       });
@@ -834,7 +989,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       {
         id: getEditorUniqueId("prev-run"),
         type: "info",
-        content: "▶ Run Preview: Triggered application refresh...",
+        content: "â–¶ Run Preview: Triggered application refresh...",
         timestamp: getTimestamp(),
       },
     ]);
@@ -854,6 +1009,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       if (isCmdOrCtrl && e.key.toLowerCase() === "s") {
         e.preventDefault();
         handleSaveActiveFile();
+      } else if (isCmdOrCtrl && e.code === "Backslash" && e.shiftKey) {
+        e.preventDefault();
+        const groupId = editorGroupsRef.current?.activeGroupId;
+        if (groupId) handleSplitGroup(groupId, "down");
+      } else if (isCmdOrCtrl && e.code === "Backslash") {
+        e.preventDefault();
+        const groupId = editorGroupsRef.current?.activeGroupId;
+        if (groupId) handleSplitGroup(groupId, "right");
       } else if (e.key === "F5") {
         e.preventDefault();
         handleRunPreview();
@@ -877,7 +1040,12 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [handleSaveActiveFile, handleRunPreview, handleToggleTerminal]);
+  }, [
+    handleSaveActiveFile,
+    handleRunPreview,
+    handleToggleTerminal,
+    handleSplitGroup,
+  ]);
 
   // Command Palette Items
   const commandList: CommandItem[] = [
@@ -907,6 +1075,26 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
       shortcut: "F5",
       icon: <Play className="w-4 h-4 text-emerald-400" />,
       action: () => handleRunPreview(),
+    },
+    {
+      id: "cmd-split-right",
+      title: "View: Split Editor Right",
+      category: "View",
+      shortcut: "Ctrl+\\",
+      icon: <Columns2 className="w-4 h-4 text-sky-400" />,
+      action: () => {
+        if (activeGroupId) handleSplitGroup(activeGroupId, "right");
+      },
+    },
+    {
+      id: "cmd-split-down",
+      title: "View: Split Editor Down",
+      category: "View",
+      shortcut: "Ctrl+Shift+\\",
+      icon: <Rows2 className="w-4 h-4 text-sky-400" />,
+      action: () => {
+        if (activeGroupId) handleSplitGroup(activeGroupId, "down");
+      },
     },
     {
       id: "cmd-ai-assistant",
@@ -981,6 +1169,42 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     );
   }
 
+  if (!editorGroups) return null;
+
+  const renderEditorGroup = (groupId: string) => {
+    const group = getEditorGroup(editorGroups, groupId);
+    if (!group) return null;
+
+    const groupOpenFiles = group.fileIds
+      .map((id) => filesById.get(id))
+      .filter((file): file is ProjectFile => !!file && !file.isFolder);
+    const groupActiveFile = resolveProjectFile(group.activeFileId);
+
+    return (
+      <EditorGroupPane
+        key={group.id}
+        groupId={group.id}
+        openFiles={groupOpenFiles}
+        activeFile={groupActiveFile}
+        project={activeProject}
+        settings={settings}
+        unsavedFiles={unsavedFiles}
+        focused={group.id === editorGroups.activeGroupId}
+        canCloseGroup={editorGroups.groups.length > 1}
+        onFocus={handleFocusGroup}
+        onSelectTab={(groupId, fileId) => handleSelectFile(fileId, groupId)}
+        onCloseTab={handleCloseTab}
+        onTabContextMenu={handleTabContextMenu}
+        onMoveTab={handleMoveTab}
+        onSplit={handleSplitGroup}
+        onCloseGroup={handleCloseGroup}
+        onChange={handleFileContentChange}
+        onSave={handleSaveFile}
+        onCursorChange={handleCursorChange}
+      />
+    );
+  };
+
   return (
     <div className="h-screen w-screen flex flex-col bg-[#1e1e1e] text-neutral-300 font-sans overflow-hidden select-none">
       {/* Top Application Header Bar */}
@@ -1025,7 +1249,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
               </span>
             </span>
             <kbd className="text-[10px] bg-neutral-800 px-1.5 py-0.2 rounded text-neutral-400 border border-neutral-700">
-              ⌘P
+              âŒ˜P
             </kbd>
           </button>
         </div>
@@ -1063,6 +1287,34 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
                 <span>Retry</span>
               </button>
             )}
+          </div>
+
+          {/* Editor Group Actions */}
+          <div className="hidden sm:flex items-center gap-0.5 rounded border border-[#2b2b2b] bg-[#161616] p-0.5">
+            <button
+              type="button"
+              data-action="header-split-right"
+              onClick={() => {
+                if (activeGroupId) handleSplitGroup(activeGroupId, "right");
+              }}
+              title="Split Editor Right (Ctrl+\\)"
+              aria-label="Split editor right"
+              className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-[#2b2b2b] hover:text-white"
+            >
+              <Columns2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              data-action="header-split-down"
+              onClick={() => {
+                if (activeGroupId) handleSplitGroup(activeGroupId, "down");
+              }}
+              title="Split Editor Down (Ctrl+Shift+\\)"
+              aria-label="Split editor down"
+              className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-[#2b2b2b] hover:text-white"
+            >
+              <Rows2 className="w-3.5 h-3.5" />
+            </button>
           </div>
 
           {/* AI Agent Entry Point */}
@@ -1122,7 +1374,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
             {activeSidebarView === "explorer" && (
               <FileExplorer
                 project={activeProject}
-                activeFileId={activeProject.activeFileId}
+                activeFileId={activeGroup?.activeFileId ?? null}
                 onSelectFile={handleSelectFile}
                 onCreateFile={handleCreateFile}
                 onRenameFile={handleRenameFile}
@@ -1149,7 +1401,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
                     {
                       id: getEditorUniqueId("git"),
                       type: "info",
-                      content: `✓ Git commit: ${msg}`,
+                      content: `âœ“ Git commit: ${msg}`,
                       timestamp: getTimestamp(),
                     },
                   ]);
@@ -1223,25 +1475,13 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         )}
 
         {/* Central Editor Area */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-[#1e1e1e]">
-          {/* Top File Tabs Bar */}
-          <EditorTabs
-            openFiles={openFiles}
-            activeFileId={activeProject.activeFileId}
-            unsavedFiles={unsavedFiles}
-            onSelectTab={handleSelectFile}
-            onCloseTab={handleCloseTab}
-          />
-
-          {/* Monaco Editor Core Engine */}
-          <div className="flex-1 overflow-hidden relative">
-            <MonacoEditorComponent
-              activeFile={activeFile}
-              project={activeProject}
-              settings={settings}
-              onChange={handleContentChange}
-              onSave={handleSaveActiveFile}
-              onCursorChange={handleCursorChange}
+        <main className="flex-1 flex flex-col overflow-hidden bg-[#1e1e1e] min-w-0">
+          {/* Split Editor Groups */}
+          <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+            <EditorSplitLayout
+              node={editorGroups.layout}
+              renderGroup={renderEditorGroup}
+              onResize={handleResizeEditorSplit}
             />
           </div>
 
@@ -1295,6 +1535,21 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         isTerminalOpen={isTerminalOpen}
         saveStatus={saveStatus}
       />
+
+      {/* Editor Tab Context Menu */}
+      {tabContextMenu && (
+        <EditorTabContextMenu
+          x={tabContextMenu.x}
+          y={tabContextMenu.y}
+          groupId={tabContextMenu.groupId}
+          fileId={tabContextMenu.fileId}
+          canCloseGroup={editorGroups.groups.length > 1}
+          onSplit={handleSplitGroup}
+          onCloseGroup={handleCloseGroup}
+          onCloseTab={closeTabInGroup}
+          onClose={closeTabContextMenu}
+        />
+      )}
 
       {/* Command Palette Modal */}
       <CommandPalette
@@ -1355,7 +1610,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
                         )}
                       </div>
                       <div className="text-[10px] text-neutral-400 font-mono mt-0.5">
-                        {p.template} • {p.files?.length || 0} files
+                        {p.template} â€¢ {p.files?.length || 0} files
                       </div>
                     </div>
                     <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
@@ -1392,7 +1647,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
               {
                 id: getEditorUniqueId("init"),
                 type: "info",
-                content: `✓ Framework tooling initialized: ${updatedProject.name}`,
+                content: `âœ“ Framework tooling initialized: ${updatedProject.name}`,
                 timestamp: getTimestamp(),
               },
             ]);
