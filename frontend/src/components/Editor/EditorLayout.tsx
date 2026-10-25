@@ -13,6 +13,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ActivityBar from "./ActivityBar";
 import FileExplorer from "./FileExplorer";
+import ResizableSidebar from "./ResizableSidebar";
 import EditorGroupPane from "./EditorGroupPane";
 import EditorSplitLayout from "./EditorSplitLayout";
 import EditorTabContextMenu from "./EditorTabContextMenu";
@@ -1370,7 +1371,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
 
         {/* Primary Sidebar Panel (Explorer, Search, Settings) */}
         {activeSidebarView && (
-          <aside className="w-64 bg-[#252526] border-r border-[#1e1e1e] flex flex-col shrink-0 z-20 overflow-hidden">
+          <ResizableSidebar>
             {activeSidebarView === "explorer" && (
               <FileExplorer
                 project={activeProject}
@@ -1471,7 +1472,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
                 </div>
               </div>
             )}
-          </aside>
+          </ResizableSidebar>
         )}
 
         {/* Central Editor Area */}
