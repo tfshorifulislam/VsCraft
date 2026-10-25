@@ -1,6 +1,5 @@
 import Navbar from "@/components/Landing/Navbar";
 import Hero from "@/components/Landing/Hero";
-import CodeEditorMockup from "@/components/Landing/CodeEditorMockup";
 import ProductShowcase from "@/components/Landing/ProductShowcase";
 import AIAgent from "@/components/Landing/AIAgent";
 import Languages from "@/components/Landing/Languages";
@@ -16,7 +15,6 @@ export default function HomePage() {
       <Navbar />
       <main className="flex-1">
         <Hero />
-        <CodeEditorMockup />
         <ProductShowcase />
         <AIAgent />
         <Languages />

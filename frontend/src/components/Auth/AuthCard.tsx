@@ -43,28 +43,6 @@ export default function AuthCard({ initialMode = "login" }: AuthCardProps) {
     }
   };
 
-  const handleDemoSignIn = async () => {
-    setError(null);
-    setIsSubmitting(true);
-    const demoEmail = "developer@codeeditor.io";
-    const demoPassword = "Password123!";
-
-    try {
-      try {
-        await login(demoEmail, demoPassword);
-      } catch {
-        // If demo user does not exist yet, create it
-        await signup(demoEmail, demoPassword, "Demo Developer");
-      }
-      router.push(redirectPath);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to sign in with demo account.";
-      setError(msg);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   return (
     <div className="w-full max-w-md bg-white border border-[#eaeaea] rounded-3xl p-8 sm:p-10 shadow-2xl relative overflow-hidden font-sans">
       {/* Decorative subtle brand gradient pill */}
@@ -180,17 +158,6 @@ export default function AuthCard({ initialMode = "login" }: AuthCardProps) {
           Or continue with
         </span>
       </div>
-
-      {/* Quick 1-click Demo Developer Sign In */}
-      <button
-        type="button"
-        onClick={handleDemoSignIn}
-        disabled={isSubmitting}
-        className="w-full bg-[#f4f2ff] hover:bg-[#ede9fe] border border-purple-200 text-[var(--color-primary)] font-semibold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
-      >
-        <Sparkles className="w-3.5 h-3.5" />
-        <span>Instant Demo Developer Sign In</span>
-      </button>
 
       {/* Toggle mode footer */}
       <div className="text-center mt-6 pt-5 border-t border-[#f0f0f0] text-xs text-neutral-500">

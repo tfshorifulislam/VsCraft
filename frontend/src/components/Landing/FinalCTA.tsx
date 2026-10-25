@@ -41,7 +41,7 @@ export default function FinalCTA() {
                 <ArrowRight className="w-4 h-4" />
               </Link>
               <a
-                href="#editor-demo"
+                href="/projects"
                 className="landing-button-secondary w-full sm:w-auto text-base !py-3 !px-6"
               >
                 Explore Interactive Demo

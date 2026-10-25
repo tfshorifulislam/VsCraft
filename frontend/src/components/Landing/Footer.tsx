@@ -38,7 +38,7 @@ export default function Footer() {
             <ul className="space-y-2 text-xs sm:text-sm">
               <li>
                 <a
-                  href="#editor-demo"
+                  href="/projects"
                   className="hover:text-[var(--color-foreground)] transition-colors"
                 >
                   Code Editor

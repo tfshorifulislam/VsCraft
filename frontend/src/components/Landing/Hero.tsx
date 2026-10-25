@@ -1,7 +1,6 @@
 import React from "react";
 import Link from "next/link";
 import { ArrowRight, Sparkles } from "lucide-react";
-import CodeEditorMockup from "./CodeEditorMockup";
 
 export default function Hero() {
   return (
@@ -62,9 +61,8 @@ export default function Hero() {
             </p>
           </div>
 
-          {/* Right Visual Column (~55% on desktop: lg:col-span-7) */}
+          {/* Right Visual Column */}
           <div className="lg:col-span-7 w-full relative">
-            <CodeEditorMockup embeddedInHero />
           </div>
         </div>
       </div>
