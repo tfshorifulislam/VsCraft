@@ -14,7 +14,6 @@ import projectsRouter from "./routes/projects";
 import filesRouter from "./routes/files";
 import terminalRouter from "./routes/terminal";
 import workspacesRouter from "./routes/workspaces";
-import { getOrCreateTerminalWSServer } from "./services/terminalWebSocketServer";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -85,12 +84,6 @@ const server = http.createServer(app);
 
 server.listen(config.port, () => {
   console.log(`[Backend] Code Editor API server running on port ${config.port}`);
-  try {
-    getOrCreateTerminalWSServer();
-    console.log(`[Backend] Terminal WebSocket server initialized on port ${config.terminalWsPort}.`);
-  } catch (wsErr) {
-    console.warn("[Backend] WebSocket server deferred or port conflict:", wsErr);
-  }
 });
 
 export default app;

@@ -24,6 +24,7 @@ import DebugPanel from "./DebugPanel";
 import ExtensionsPanel from "./ExtensionsPanel";
 import WorkspaceSearchPanel from "./WorkspaceSearchPanel";
 import { cloudApi } from "@/lib/cloud/cloudApi";
+import { webcontainerManager } from "@/lib/webcontainer/webcontainerManager";
 import { fileContentCache } from "@/lib/cache/fileContentCache";
 import {
   Project,
@@ -265,6 +266,11 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         });
         setEditorGroups(createEditorGroups(validOpenIds, activeId));
 
+        // Mount project into in-browser WebContainer runtime
+        webcontainerManager.mountProject(cloudProj.id, projectFiles).catch((err) => {
+          console.warn("[WebContainer] Background project mounting deferred or failed:", err);
+        });
+
         // Also load cloud projects list for project switcher modal
         cloudApi.projects
           .list("all")
@@ -409,6 +415,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
         if (latestInMemory === content) {
           setSaveStatus("saved");
           setUnsavedFiles((prev) => ({ ...prev, [fileId]: false }));
+        }
+
+        // Sync saved content to WebContainer virtual file system
+        const targetFile = currentProject.files.find((f) => f.id === fileId);
+        if (targetFile) {
+          webcontainerManager.writeFile(targetFile.path, content).catch((err) => {
+            console.warn("[WebContainer] Failed to write file:", err);
+          });
         }
       } catch (err) {
         setSaveStatus("error");
@@ -622,6 +636,9 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
           setEditorGroups((prev) =>
             prev ? openEditorFileInGroup(prev, prev.activeGroupId, serverFile.id) : prev
           );
+          webcontainerManager.writeFile(serverFile.path, serverFile.content).catch((err) => {
+            console.warn("[WebContainer] Failed to sync new file:", err);
+          });
         }
       }
     } catch (err) {
@@ -642,8 +659,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     if (!activeProject) return;
 
     try {
+      const oldFile = activeProject.files.find((f) => f.id === fileId);
       const updated = await cloudApi.files.rename(activeProject.id, fileId, newName);
       if (updated) {
+        if (oldFile && !oldFile.isFolder) {
+          webcontainerManager.renameFile(oldFile.path, updated.path).catch((err) => {
+            console.warn("[WebContainer] Failed to rename file:", err);
+          });
+        }
         setActiveProject((prev) => {
           if (!prev) return null;
           return {
@@ -664,7 +687,13 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     if (!activeProject) return;
 
     try {
+      const fileToDelete = activeProject.files.find((f) => f.id === fileId);
       await cloudApi.files.delete(activeProject.id, fileId);
+      if (fileToDelete) {
+        webcontainerManager.removeFile(fileToDelete.path).catch((err) => {
+          console.warn("[WebContainer] Failed to delete file:", err);
+        });
+      }
 
       // Collect descendant ids if folder
       const toDeleteIds = new Set<string>([fileId]);
@@ -739,6 +768,7 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
             uploaded.content,
             uploaded.version
           );
+          webcontainerManager.writeFile(uploaded.path, uploaded.content).catch(() => {});
         }
         setActiveProject((prev) => {
           if (!prev) return null;

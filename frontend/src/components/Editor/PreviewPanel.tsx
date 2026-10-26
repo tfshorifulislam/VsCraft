@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   RotateCw,
   RotateCcw,
@@ -12,10 +12,13 @@ import {
   Loader2,
   Play,
   Square,
-  Server,
+  Cpu,
+  Zap,
 } from "lucide-react";
 import { Project } from "@/types/editor";
-import { cloudApi } from "@/lib/cloud/cloudApi";
+import { webcontainerManager } from "@/lib/webcontainer/webcontainerManager";
+import { generatePreviewHtml } from "@/lib/runtime/previewCompiler";
+import type { WebContainerProcess } from "@webcontainer/api";
 
 interface PreviewPanelProps {
   project: Project;
@@ -36,110 +39,157 @@ export default function PreviewPanel({
   const [previewMode, setPreviewMode] = useState<"devserver" | "compiler">("devserver");
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Dev server state
-  const [serverStatus, setServerStatus] = useState<"stopped" | "starting" | "running" | "error">("stopped");
-  const [serverPort, setServerPort] = useState<number | undefined>(undefined);
-  const [serverUrl, setServerUrl] = useState<string | undefined>(undefined);
+  // Dev server state (WebContainer runtime in browser)
+  const [serverPort, setServerPort] = useState<number | undefined>(
+    () => webcontainerManager.getLatestServerPort() ?? undefined
+  );
+  const [serverUrl, setServerUrl] = useState<string | undefined>(
+    () => webcontainerManager.getLatestServerUrl() ?? undefined
+  );
+  const [serverStatus, setServerStatus] = useState<"stopped" | "starting" | "running" | "error">(() => {
+    return webcontainerManager.getLatestServerUrl() ? "running" : "stopped";
+  });
   const [serverLogs, setServerLogs] = useState<string[]>([]);
   const [serverError, setServerError] = useState<string | undefined>(undefined);
   const [isActionLoading, setIsActionLoading] = useState(false);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const devProcessRef = useRef<WebContainerProcess | null>(null);
 
-  // Start dev server action
-  const handleStartServer = React.useCallback(async () => {
-    setIsActionLoading(true);
-    setServerStatus("starting");
-    try {
-      const res = await cloudApi.server.start(project.id);
-      setServerStatus(res.status);
-      setServerPort(res.port);
-      setServerUrl(res.url);
-      setServerLogs(res.logs || []);
-      setServerError(res.error);
-    } catch (err) {
-      setServerStatus("error");
-      setServerError(err instanceof Error ? err.message : "Failed to start dev server");
-    } finally {
-      setIsActionLoading(false);
-    }
-  }, [project.id]);
-
-  // Stop dev server action: stops process and closes/hides the preview window
-  const handleStopServer = React.useCallback(async () => {
-    setIsActionLoading(true);
-    try {
-      await cloudApi.server.stop(project.id);
-      setServerStatus("stopped");
-      setServerPort(undefined);
-      setServerUrl(undefined);
-      onClose();
-    } catch (err) {
-      console.error("Stop dev server error:", err);
-    } finally {
-      setIsActionLoading(false);
-    }
-  }, [project.id, onClose]);
-
-  // Restart dev server action
-  const handleRestartServer = React.useCallback(async () => {
-    setIsActionLoading(true);
-    setServerStatus("starting");
-    try {
-      const res = await cloudApi.server.restart(project.id);
-      setServerStatus(res.status);
-      setServerPort(res.port);
-      setServerUrl(res.url);
-      setServerLogs(res.logs || []);
-      setServerError(res.error);
-      setRefreshKey((k) => k + 1);
-    } catch (err) {
-      setServerStatus("error");
-      setServerError(err instanceof Error ? err.message : "Failed to restart dev server");
-    } finally {
-      setIsActionLoading(false);
-    }
-  }, [project.id]);
-
-  // Query server status and automatically start or refresh dev server preview on Run Preview
+  // Listen to WebContainer server-ready events
   useEffect(() => {
-    if (!project.id || !isOpen) return;
-    let isCancelled = false;
+    const unsubscribe = webcontainerManager.onServerReady((port, url) => {
+      setServerPort(port);
+      setServerUrl(url);
+      setServerStatus("running");
+      setIsActionLoading(false);
+    });
 
-    async function loadStatusAndRun() {
-      if (previewMode === "compiler") {
-        setRefreshKey((k) => k + 1);
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  // In-Browser Fast Preview generation
+  const clientCompilerBlobUrl = useMemo(() => {
+    void refreshKey;
+    void refreshTrigger;
+    if (previewMode !== "compiler" || !isOpen) return null;
+    try {
+      const html = generatePreviewHtml(project);
+      const blob = new Blob([html], { type: "text/html" });
+      return URL.createObjectURL(blob);
+    } catch (err) {
+      console.error("Fast compiler preview generation error:", err);
+      return null;
+    }
+  }, [previewMode, isOpen, project, refreshKey, refreshTrigger]);
+
+  useEffect(() => {
+    return () => {
+      if (clientCompilerBlobUrl) {
+        URL.revokeObjectURL(clientCompilerBlobUrl);
+      }
+    };
+  }, [clientCompilerBlobUrl]);
+
+  // Start dev server inside in-browser WebContainer
+  const handleStartServer = useCallback(async () => {
+    setIsActionLoading(true);
+    setServerStatus("starting");
+    setServerError(undefined);
+    setServerLogs(["[WebContainer] Initializing dev server runtime in browser..."]);
+
+    try {
+      const container = await webcontainerManager.getInstance();
+
+      // Ensure files are mounted
+      if (!webcontainerManager.isProjectMounted(project.id)) {
+        setServerLogs((prev) => [...prev, "[WebContainer] Mounting project files..."]);
+        await webcontainerManager.mountProject(project.id, project.files);
+      }
+
+      // Check package.json for start or dev script
+      const pkgFile = project.files.find((f) => f.path === "package.json" || f.name === "package.json");
+      let scriptName = "dev";
+      let hasPackageJson = false;
+
+      if (pkgFile?.content) {
+        hasPackageJson = true;
+        try {
+          const parsed = JSON.parse(pkgFile.content);
+          if (!parsed.scripts?.dev && parsed.scripts?.start) {
+            scriptName = "start";
+          }
+        } catch {}
+      }
+
+      if (!hasPackageJson) {
+        // Vanilla web project without package.json -> switch to Fast In-Browser Preview
+        setServerLogs((prev) => [
+          ...prev,
+          "[WebContainer] No package.json found. Switching to In-Browser Web Preview...",
+        ]);
+        setPreviewMode("compiler");
+        setServerStatus("stopped");
+        setIsActionLoading(false);
         return;
       }
 
-      try {
-        const res = await cloudApi.server.getStatus(project.id);
-        if (isCancelled) return;
+      setServerLogs((prev) => [...prev, `[WebContainer] Running 'npm run ${scriptName}'...`]);
 
-        setServerStatus(res.status);
-        setServerPort(res.port);
-        setServerUrl(res.url);
-        setServerLogs(res.logs || []);
-        setServerError(res.error);
+      const proc = await container.spawn("npm", ["run", scriptName]);
+      devProcessRef.current = proc;
 
-        // If server is running, refresh the preview
-        if (res.status === "running") {
-          setRefreshKey((k) => k + 1);
-        } else if (res.status === "stopped") {
-          // If server is stopped, start it automatically so clicking Run Preview actually runs the preview
-          handleStartServer();
+      proc.output.pipeTo(
+        new WritableStream({
+          write(chunk) {
+            setServerLogs((prev) => [...prev.slice(-120), chunk]);
+          },
+        })
+      );
+
+      proc.exit.then((exitCode) => {
+        if (exitCode !== 0) {
+          setServerError(`Process exited with code ${exitCode}`);
+          setServerStatus("error");
+        } else {
+          setServerStatus("stopped");
         }
-      } catch {
-        // Fallback
-      }
+        setIsActionLoading(false);
+      });
+    } catch (err) {
+      console.error("[WebContainer] Start server error:", err);
+      setServerStatus("error");
+      setServerError(err instanceof Error ? err.message : "Failed to start WebContainer dev server");
+      setIsActionLoading(false);
     }
+  }, [project.id, project.files]);
 
-    loadStatusAndRun();
-    return () => {
-      isCancelled = true;
-    };
-  }, [project.id, isOpen, refreshTrigger, previewMode, handleStartServer]);
+  // Stop dev server inside WebContainer
+  const handleStopServer = useCallback(() => {
+    setIsActionLoading(true);
+    try {
+      if (devProcessRef.current) {
+        devProcessRef.current.kill();
+        devProcessRef.current = null;
+      }
+      setServerStatus("stopped");
+      setServerPort(undefined);
+      setServerUrl(undefined);
+    } finally {
+      setIsActionLoading(false);
+    }
+  }, []);
+
+  // Restart dev server
+  const handleRestartServer = useCallback(async () => {
+    handleStopServer();
+    setTimeout(() => {
+      handleStartServer();
+    }, 150);
+  }, [handleStopServer, handleStartServer]);
 
   // Auto-scroll logs when starting
   useEffect(() => {
@@ -148,7 +198,7 @@ export default function PreviewPanel({
     }
   }, [serverLogs, serverStatus]);
 
-  // Listen for console bridge messages from the iframe
+  // Listen for console bridge messages from the preview iframe
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
       if (e.data && e.data.type === "PREVIEW_CONSOLE" && onConsoleMessage) {
@@ -167,8 +217,8 @@ export default function PreviewPanel({
   const handleOpenExternal = () => {
     if (previewMode === "devserver" && serverUrl) {
       window.open(serverUrl, "_blank");
-    } else {
-      window.open(`/api/projects/${encodeURIComponent(project.id)}/preview`, "_blank");
+    } else if (clientCompilerBlobUrl) {
+      window.open(clientCompilerBlobUrl, "_blank");
     }
   };
 
@@ -189,7 +239,7 @@ export default function PreviewPanel({
   const activeIframeSrc =
     previewMode === "devserver" && serverStatus === "running" && serverUrl
       ? `${serverUrl}?t=${refreshKey}_${refreshTrigger}`
-      : `/api/projects/${encodeURIComponent(project.id)}/preview?t=${refreshKey}_${refreshTrigger}`;
+      : clientCompilerBlobUrl || "";
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] border-l border-[#2b2b2b] select-none z-10 w-full min-w-[320px]">
@@ -198,104 +248,98 @@ export default function PreviewPanel({
         {/* Left: Reload / Controls + Address bar */}
         <div className="flex items-center gap-1.5 flex-1 max-w-md">
           {previewMode === "devserver" && serverStatus === "running" ? (
-            <>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={handleRefresh}
-                title="Reload preview"
-                className="p-1 hover:text-white rounded hover:bg-[#333333] transition cursor-pointer"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={handleRestartServer}
-                disabled={isActionLoading}
-                title="Restart dev server process"
-                className="p-1 text-amber-400 hover:text-amber-300 rounded hover:bg-[#333333] transition cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={handleStopServer}
-                disabled={isActionLoading}
-                title="Stop dev server process"
-                className="p-1 text-rose-400 hover:text-rose-300 rounded hover:bg-[#333333] transition cursor-pointer"
-              >
-                <Square className="w-3.5 h-3.5 fill-current" />
-              </button>
-            </>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={handleRestartServer}
+              disabled={isActionLoading}
+              title="Restart WebContainer dev server"
+              className="p-1.5 hover:text-white text-neutral-400 rounded hover:bg-[#333333] transition cursor-pointer"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${isActionLoading ? "animate-spin" : ""}`} />
+            </button>
           ) : (
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={previewMode === "devserver" ? handleStartServer : handleRefresh}
-              disabled={isActionLoading}
-              title={previewMode === "devserver" ? "Start dev server process" : "Reload preview"}
-              className="p-1 text-emerald-400 hover:text-emerald-300 rounded hover:bg-[#333333] transition cursor-pointer"
+              onClick={handleRefresh}
+              title="Refresh live preview"
+              className="p-1.5 hover:text-white text-neutral-400 rounded hover:bg-[#333333] transition cursor-pointer"
             >
-              {isActionLoading || serverStatus === "starting" ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : previewMode === "devserver" ? (
-                <Play className="w-3.5 h-3.5 fill-current" />
-              ) : (
-                <RotateCw className="w-3.5 h-3.5" />
-              )}
+              <RotateCw className="w-3.5 h-3.5" />
             </button>
           )}
 
           {/* Address Bar */}
-          <div className="flex-1 flex items-center bg-[#1e1e1e] border border-[#333333] px-2.5 py-1 rounded-md text-[11px] font-mono text-neutral-400 min-w-0">
-            {previewMode === "devserver" ? (
-              <>
-                <span
-                  className={`w-2 h-2 rounded-full mr-1.5 shrink-0 ${
-                    serverStatus === "running"
-                      ? "bg-emerald-400 animate-pulse"
-                      : serverStatus === "starting"
-                      ? "bg-amber-400 animate-ping"
-                      : serverStatus === "error"
-                      ? "bg-rose-400"
-                      : "bg-neutral-600"
-                  }`}
-                />
-                <span className="text-neutral-200 truncate">
-                  {serverStatus === "running" && serverUrl
-                    ? serverUrl
-                    : serverStatus === "starting"
-                    ? `Starting on :${serverPort || 3100}...`
-                    : "Dev Server: Stopped"}
-                </span>
-                <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded border shrink-0 font-sans font-semibold ml-1 bg-emerald-950/80 text-emerald-300 border-emerald-800/40">
-                  {serverStatus === "running" ? "Dev Server" : "Stopped"}
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="w-2 h-2 rounded-full bg-cyan-400 mr-1.5 shrink-0" />
-                <span className="text-neutral-200 truncate">Instant Bundler (esbuild)</span>
-                <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded border shrink-0 font-sans font-semibold ml-1 bg-cyan-950/80 text-cyan-300 border-cyan-800/40">
-                  Compiler
-                </span>
-              </>
-            )}
+          <div className="flex-1 bg-[#181818] border border-[#333333] rounded px-2.5 py-1 text-[11px] font-mono text-neutral-400 flex items-center gap-2 overflow-hidden shadow-inner">
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                previewMode === "devserver" && serverStatus === "running"
+                  ? "bg-emerald-400 animate-pulse"
+                  : previewMode === "devserver" && serverStatus === "starting"
+                  ? "bg-amber-400 animate-pulse"
+                  : previewMode === "compiler"
+                  ? "bg-sky-400"
+                  : "bg-neutral-600"
+              }`}
+            />
+            <span className="truncate select-text">
+              {previewMode === "devserver" && serverStatus === "running" && serverUrl
+                ? serverUrl
+                : previewMode === "devserver" && serverStatus === "starting"
+                ? `Booting WebContainer port ${serverPort || "..."}`
+                : previewMode === "compiler"
+                ? "in-browser:preview"
+                : "WebContainer Runtime (Stopped)"}
+            </span>
           </div>
+
+          {/* Start/Stop Controls for Dev Server */}
+          {previewMode === "devserver" && (
+            <div>
+              {serverStatus === "running" ? (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handleStopServer}
+                  disabled={isActionLoading}
+                  title="Stop Dev Server"
+                  className="px-2 py-1 bg-rose-950/60 hover:bg-rose-900 border border-rose-800/60 text-rose-300 rounded font-semibold text-[10px] flex items-center gap-1 transition cursor-pointer"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  <span>Stop</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handleStartServer}
+                  disabled={isActionLoading || serverStatus === "starting"}
+                  title="Start Dev Server inside WebContainer"
+                  className="px-2 py-1 bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800/60 text-emerald-300 rounded font-semibold text-[10px] flex items-center gap-1 transition cursor-pointer"
+                >
+                  {isActionLoading || serverStatus === "starting" ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                  ) : (
+                    <Play className="w-3 h-3 fill-current" />
+                  )}
+                  <span>Run Dev</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Center: Device Viewport Switches */}
-        <div className="hidden sm:flex items-center bg-[#1e1e1e] p-0.5 rounded border border-[#333333]">
+        {/* Center: Device Responsive Mode Switcher */}
+        <div className="flex items-center gap-0.5 bg-[#181818] p-0.5 rounded border border-[#333333]">
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setDeviceMode("desktop")}
             title="Desktop view"
-            className={`p-1 rounded transition cursor-pointer ${
+            className={`p-1.5 rounded transition cursor-pointer ${
               deviceMode === "desktop"
-                ? "bg-[var(--color-primary)] text-white"
+                ? "bg-[#333333] text-white"
                 : "text-neutral-400 hover:text-white"
             }`}
           >
@@ -306,9 +350,9 @@ export default function PreviewPanel({
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setDeviceMode("tablet")}
             title="Tablet view (768px)"
-            className={`p-1 rounded transition cursor-pointer ${
+            className={`p-1.5 rounded transition cursor-pointer ${
               deviceMode === "tablet"
-                ? "bg-[var(--color-primary)] text-white"
+                ? "bg-[#333333] text-white"
                 : "text-neutral-400 hover:text-white"
             }`}
           >
@@ -319,9 +363,9 @@ export default function PreviewPanel({
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setDeviceMode("mobile")}
             title="Mobile view (375px)"
-            className={`p-1 rounded transition cursor-pointer ${
+            className={`p-1.5 rounded transition cursor-pointer ${
               deviceMode === "mobile"
-                ? "bg-[var(--color-primary)] text-white"
+                ? "bg-[#333333] text-white"
                 : "text-neutral-400 hover:text-white"
             }`}
           >
@@ -329,33 +373,34 @@ export default function PreviewPanel({
           </button>
         </div>
 
-        {/* Mode Toggle & Window Actions */}
-        <div className="flex items-center gap-1">
-          {/* Mode Switcher Pill */}
-          <div className="hidden lg:flex items-center bg-[#1e1e1e] p-0.5 rounded border border-[#333333] text-[10px] font-sans font-medium">
+        {/* Right: Runtime Mode Tabs & Window controls */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-[#181818] p-0.5 rounded border border-[#333333] text-[11px]">
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setPreviewMode("devserver")}
-              className={`px-2 py-0.5 rounded transition cursor-pointer ${
+              className={`px-2 py-0.5 rounded transition cursor-pointer flex items-center gap-1 ${
                 previewMode === "devserver"
                   ? "bg-[#333333] text-white font-semibold"
                   : "text-neutral-400 hover:text-white"
               }`}
             >
-              Dev Server
+              <Cpu className="w-3 h-3 text-emerald-400" />
+              <span>WebContainer Dev</span>
             </button>
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setPreviewMode("compiler")}
-              className={`px-2 py-0.5 rounded transition cursor-pointer ${
+              className={`px-2 py-0.5 rounded transition cursor-pointer flex items-center gap-1 ${
                 previewMode === "compiler"
                   ? "bg-[#333333] text-white font-semibold"
                   : "text-neutral-400 hover:text-white"
               }`}
             >
-              Fast Compiler
+              <Zap className="w-3 h-3 text-sky-400" />
+              <span>Fast In-Browser</span>
             </button>
           </div>
 
@@ -396,7 +441,7 @@ export default function PreviewPanel({
               ref={iframeRef}
               key={`${refreshKey}-${refreshTrigger}-${serverPort}`}
               src={activeIframeSrc}
-              title="Live Development Server Preview"
+              title="WebContainer Live Development Preview"
               sandbox="allow-scripts allow-modals allow-forms allow-popups"
               className="w-full h-full border-0 bg-white"
             />
@@ -405,9 +450,9 @@ export default function PreviewPanel({
             <div className="w-full h-full bg-[#181818] text-white font-mono text-xs flex flex-col p-4">
               <div className="flex items-center gap-2 pb-3 border-b border-[#2b2b2b] text-neutral-300">
                 <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-                <span className="font-semibold text-white">Starting Project Development Server...</span>
+                <span className="font-semibold text-white">Starting In-Browser WebContainer Server...</span>
                 <span className="text-neutral-500 text-[11px] ml-auto">
-                  workspaces/{project.name}
+                  browser-runtime/{project.name}
                 </span>
               </div>
               <div className="flex-1 overflow-y-auto py-2 space-y-1 text-neutral-400 select-text leading-relaxed">
@@ -415,7 +460,7 @@ export default function PreviewPanel({
                   <div
                     key={idx}
                     className={
-                      log.includes("Ready") || log.includes("Local:")
+                      log.includes("Ready") || log.includes("Local:") || log.includes("http")
                         ? "text-emerald-400 font-semibold"
                         : log.includes("Error") || log.includes("[stderr]")
                         ? "text-rose-400"
@@ -432,16 +477,15 @@ export default function PreviewPanel({
             /* State 3: Dev Server Stopped / Launch Card */
             <div className="w-full h-full bg-[#181818] text-white font-sans flex flex-col items-center justify-center p-6 text-center">
               <div className="max-w-sm w-full bg-[#242426] border border-[#383838] rounded-2xl p-6 shadow-2xl space-y-4">
-                <div className="w-12 h-12 rounded-xl bg-emerald-500/10 text-emerald-400 mx-auto flex items-center justify-center">
-                  <Server className="w-6 h-6" />
+                <div className="w-12 h-12 rounded-xl bg-cyan-500/10 text-cyan-400 mx-auto flex items-center justify-center">
+                  <Cpu className="w-6 h-6" />
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white flex items-center justify-center gap-2">
-                    <span>Live Development Server</span>
+                    <span>WebContainer Browser Runtime</span>
                   </h3>
                   <p className="text-xs text-neutral-400 mt-1">
-                    Execute the real development runtime ({project.template || "web"}) directly in{" "}
-                    <code className="text-neutral-300 font-mono text-[10px]">workspaces/{project.id}</code>.
+                    Execute code and development servers ({project.template || "web"}) securely inside WebAssembly in your browser.
                   </p>
                 </div>
 
@@ -473,18 +517,18 @@ export default function PreviewPanel({
                     onClick={() => setPreviewMode("compiler")}
                     className="text-[11px] text-neutral-400 hover:text-white py-1 transition cursor-pointer"
                   >
-                    Or switch to Fast Compiler (esbuild)
+                    Or switch to Fast In-Browser Preview
                   </button>
                 </div>
               </div>
             </div>
           ) : (
-            /* State 4: Fast In-Memory Compiler Mode */
+            /* State 4: Fast In-Browser HTML/JS Preview */
             <iframe
               ref={iframeRef}
               key={`compiler-${refreshKey}-${refreshTrigger}`}
-              src={`/api/projects/${encodeURIComponent(project.id)}/preview?t=${refreshKey}_${refreshTrigger}`}
-              title="Fast Compiler Live Preview"
+              src={activeIframeSrc}
+              title="Fast In-Browser Live Preview"
               sandbox="allow-scripts allow-modals allow-forms allow-popups"
               className="w-full h-full border-0 bg-white"
             />

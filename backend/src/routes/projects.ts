@@ -21,22 +21,6 @@ import {
   detectProjectsInWorkspace,
   promoteSubfolderToRoot,
 } from "../services/projectDetector";
-import {
-  getDevServerStatus,
-  startDevServer,
-  stopDevServer,
-  restartDevServer,
-} from "../services/devServerManager";
-import { compileProjectForPreview } from "../services/previewCompiler";
-import { setSessionCwd, killSessionProcess } from "../services/terminalProcessManager";
-import {
-  createPtySession,
-  closeAllPtySessions,
-} from "../services/terminalPtyManager";
-import {
-  getOrCreateTerminalWSServer,
-  getTerminalWSPort,
-} from "../services/terminalWebSocketServer";
 import { detectProjectFramework } from "../utils/detectFramework";
 import {
   beginProjectImport,
@@ -686,42 +670,23 @@ router.post("/terminal-session", requireAuth, async (req: AuthenticatedRequest, 
       throw new Error("Failed to create draft project.");
     }
 
-    await ensureWorkspaceOnDisk(project);
-    setSessionCwd(project.id, "");
-
-    try {
-      getOrCreateTerminalWSServer();
-    } catch (err) {
-      console.warn("WebSocket server start error:", err);
-    }
-
-    const ptySession = createPtySession(
-      project.id,
-      undefined,
-      undefined,
-      80,
-      24,
-      project.name
-    );
-    const wsPort = getTerminalWSPort();
-
     return res.json({
       success: true,
       projectId: project.id,
       projectName: project.name,
-      sessionId: ptySession.id,
-      cwd: ptySession.cwd,
+      sessionId: "wc-session-1",
+      cwd: "/home/project",
       project: {
         id: project.id,
         name: project.name,
       },
       session: {
-        id: ptySession.id,
-        name: ptySession.name,
-        cwd: ptySession.cwd,
-        shellType: ptySession.shellType,
+        id: "wc-session-1",
+        name: "WebContainer",
+        cwd: "/home/project",
+        shellType: "bash",
       },
-      wsPort,
+      wsPort: 0,
     });
   } catch (error) {
     console.error("Failed to create terminal session project:", error);
@@ -848,9 +813,6 @@ router.post("/:id/cleanup", requireAuth, async (req: AuthenticatedRequest, res: 
   if (!project) {
     return res.json({ success: true });
   }
-
-  closeAllPtySessions(projectId);
-  await killSessionProcess(projectId);
 
   try {
     const dir = getWorkspaceDir(projectId);
@@ -991,23 +953,11 @@ router.post("/:id/finalize", requireAuth, async (req: AuthenticatedRequest, res:
 });
 
 // GET /api/projects/:id/preview
-router.get("/:id/preview", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user!.id;
-  const projectId = req.params.id;
-
-  const project = await getProjectById(projectId, userId, { includeContent: "full" });
-  if (!project) {
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    return res.status(404).send("<!DOCTYPE html><html><body><div style='padding:20px;font-family:sans-serif;color:#ef4444;'>Project not found or unauthorized.</div></body></html>");
-  }
-
-  await ensureWorkspaceOnDisk(project).catch((err) => console.error("Workspace disk sync warning:", err));
-
-  const result = await compileProjectForPreview(project);
-
+router.get("/:id/preview", requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  return res.send(result.html);
+  return res.send(
+    "<!DOCTYPE html><html><body><div style='padding:24px;font-family:sans-serif;color:#888;text-align:center;'><h2>WebContainer In-Browser Runtime</h2><p>Preview execution is handled client-side inside the browser's WebContainer runtime.</p></div></body></html>"
+  );
 });
 
 // GET /api/projects/:id/raw
@@ -1067,70 +1017,20 @@ router.get("/:id/raw", requireAuth, async (req: AuthenticatedRequest, res: Respo
 });
 
 // GET /api/projects/:id/server
-router.get("/:id/server", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user!.id;
-  const projectId = req.params.id;
-
-  const project = await getProjectById(projectId, userId);
-  if (!project) {
-    return res.status(404).json({ error: "Project not found or unauthorized." });
-  }
-
-  const status = getDevServerStatus(projectId);
-  return res.json({ server: status });
+router.get("/:id/server", requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
+  return res.json({
+    server: {
+      status: "stopped",
+      message: "Dev servers run inside the browser's WebContainer runtime.",
+    },
+  });
 });
 
 // POST /api/projects/:id/server
-router.post("/:id/server", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user!.id;
-  const projectId = req.params.id;
-
-  const project = await getProjectById(projectId, userId);
-  if (!project) {
-    return res.status(404).json({ error: "Project not found or unauthorized." });
-  }
-
-  const action = (req.body?.action as string) || "start";
-
-  try {
-    if (action === "stop") {
-      await stopDevServer(projectId);
-      return res.json({
-        server: { status: "stopped", logs: ["[DevServer] Stopped by user."] },
-      });
-    }
-
-    if (action === "restart") {
-      const restarted = await restartDevServer(projectId);
-      return res.json({
-        server: {
-          status: restarted.status,
-          port: restarted.port,
-          url: restarted.url,
-          framework: restarted.framework,
-          logs: restarted.logs,
-          error: restarted.error,
-        },
-      });
-    }
-
-    const instance = await startDevServer(projectId);
-    return res.json({
-      server: {
-        status: instance.status,
-        port: instance.port,
-        url: instance.url,
-        framework: instance.framework,
-        logs: instance.logs,
-        error: instance.error,
-      },
-    });
-  } catch (err) {
-    console.error("Dev server action error:", err);
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : "Failed to execute dev server action.",
-    });
-  }
+router.post("/:id/server", requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
+  return res.status(403).json({
+    error: "Backend dev server execution is disabled. Development servers run in the browser's WebContainer runtime.",
+  });
 });
 
 // POST /api/projects/:id/sync

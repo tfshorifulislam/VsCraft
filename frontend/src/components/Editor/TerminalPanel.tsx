@@ -12,11 +12,13 @@ import {
   Maximize2,
   Minimize2,
   ChevronDown,
-  Folder,
   CheckCircle2,
+  Play,
+  Package,
+  Cpu,
 } from "lucide-react";
 import { BottomTab, ConsoleMessage, Project, ProjectFile, ShellType, TerminalTabInfo, AvailableShell } from "@/types/editor";
-import { cloudApi } from "@/lib/cloud/cloudApi";
+import { webcontainerManager, type WebContainerShellHandle } from "@/lib/webcontainer/webcontainerManager";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -37,13 +39,16 @@ interface ActiveSessionHandle {
   term: XTerm;
   fitAddon: FitAddon;
   containerEl: HTMLDivElement;
-  ws?: WebSocket;
-  isWsConnected: boolean;
-  httpAbortController?: AbortController;
-  hasReceivedInitBuffer?: boolean;
+  shell?: WebContainerShellHandle;
+  isReady?: boolean;
 }
 
-function TerminalPanel({
+const DEFAULT_AVAILABLE_SHELLS: AvailableShell[] = [
+  { type: "bash", label: "WebContainer Shell (jsh)", path: "/bin/jsh" },
+  { type: "sh", label: "Standard POSIX Shell", path: "/bin/sh" },
+];
+
+export default function TerminalPanel({
   isOpen,
   onToggle,
   activeTab,
@@ -60,14 +65,22 @@ function TerminalPanel({
   const startDragYRef = useRef<number>(0);
   const startHeightRef = useRef<number>(240);
 
-  // Terminal sessions state
-  const [sessions, setSessions] = useState<TerminalTabInfo[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string>("");
-  const [availableShells, setAvailableShells] = useState<AvailableShell[]>([]);
-  const [wsPort, setWsPort] = useState<number>(3005);
+  // Terminal sessions state (Managed client-side in WebContainer)
+  const [sessions, setSessions] = useState<TerminalTabInfo[]>([
+    {
+      id: "wc-session-1",
+      name: "jsh (WebContainer)",
+      shellType: "bash",
+      isRunning: true,
+      cwd: "/home/project",
+    },
+  ]);
+  const [activeSessionId, setActiveSessionId] = useState<string>("wc-session-1");
   const [isShellMenuOpen, setIsShellMenuOpen] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [_runtimeStatus, setRuntimeStatus] = useState<"idle" | "booting" | "ready" | "error">("idle");
+  const sessionCounterRef = useRef<number>(1);
 
   // Map of active xterm sessions: sessionId -> ActiveSessionHandle
   const sessionsMapRef = useRef<Map<string, ActiveSessionHandle>>(new Map());
@@ -78,189 +91,76 @@ function TerminalPanel({
     onFilesSyncedRef.current = onFilesSynced;
   }, [onFilesSynced]);
 
-  // Load available sessions and shells from backend
-  const loadSessionsData = useCallback(async () => {
-    try {
-      const data = await cloudApi.terminal.getSessions(project.id);
-      setSessions(data.sessions);
-      setAvailableShells(data.availableShells);
-      if (typeof data.wsPort === "number") {
-        setWsPort(data.wsPort);
-      }
-
-      if (data.sessions.length > 0) {
-        setActiveSessionId((prev) => {
-          if (prev && data.sessions.some((s) => s.id === prev)) return prev;
-          return data.sessions[0].id;
-        });
-      } else {
-        // If a terminal session does not exist, create one when the user first opens the terminal
-        try {
-          const createRes = await cloudApi.terminal.createSession(project.id);
-          if (createRes?.session) {
-            setSessions([createRes.session]);
-            setActiveSessionId(createRes.session.id);
-          }
-        } catch (createErr) {
-          console.warn("Failed to create initial terminal session:", createErr);
-        }
-      }
-    } catch (err) {
-      console.warn("Failed to load terminal sessions:", err);
-    }
-  }, [project.id]);
-
-  useEffect(() => {
-    if (isOpen) {
-      loadSessionsData();
-    }
-  }, [isOpen, loadSessionsData]);
-
-  // Connect a session's xterm directly to the persistent PTY backend
+  // Connect a session's xterm directly to WebContainer's in-browser shell
   const setupSessionConnection = useCallback(
-    (sessionId: string, handle: ActiveSessionHandle) => {
+    async (sessionId: string, handle: ActiveSessionHandle) => {
       const { term, fitAddon } = handle;
 
-      // 1. Establish authenticated WebSocket connection to persistent PTY
-      let wsBase = process.env.NEXT_PUBLIC_WS_URL;
-      if (!wsBase) {
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const hostname = window.location.hostname || "localhost";
-        wsBase = `${protocol}//${hostname}:${wsPort}`;
-      }
-      const separator = wsBase.includes("?") ? "&" : "?";
-      const wsUrl = `${wsBase}${separator}projectId=${encodeURIComponent(project.id)}&sessionId=${encodeURIComponent(sessionId)}`;
+      if (handle.isReady) return;
 
-      let socket: WebSocket | null = null;
       try {
-        socket = new WebSocket(wsUrl);
-      } catch (err) {
-        console.warn("WebSocket creation error, falling back to HTTP stream:", err);
-      }
+        setRuntimeStatus("booting");
+        term.write("\x1b[36m[WebContainer]\x1b[0m Initializing in-browser Node.js runtime...\r\n");
 
-      // Fallback helper for HTTP stream
-      const startHttpStreamingFallback = () => {
-        handle.isWsConnected = false;
-        const controller = new AbortController();
-        handle.httpAbortController = controller;
+        // Ensure project files are mounted into WebContainer
+        if (!webcontainerManager.isProjectMounted(project.id)) {
+          term.write("\x1b[33m[WebContainer]\x1b[0m Mounting project files into virtual filesystem...\r\n");
+          await webcontainerManager.mountProject(project.id, project.files);
+        }
 
-        fetch(`/api/projects/${project.id}/terminal/stream`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId }),
-          signal: controller.signal,
-        })
-          .then(async (res) => {
-            if (!res.ok || !res.body) return;
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
+        // Spawn interactive jsh shell in WebContainer
+        const shell = await webcontainerManager.spawnShell({
+          cols: term.cols || 80,
+          rows: term.rows || 24,
+          onData: (data) => {
+            term.write(data);
+          },
+        });
 
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
+        handle.shell = shell;
+        handle.isReady = true;
+        setRuntimeStatus("ready");
 
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split("\n\n");
-              buffer = lines.pop() || "";
+        term.write("\x1b[32m[WebContainer]\x1b[0m Ready! Terminal commands run directly inside browser.\r\n");
 
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed.startsWith("data: ")) {
-                  try {
-                    const event = JSON.parse(trimmed.slice(6));
-                    if (event.type === "output" && typeof event.data === "string") {
-                      term.write(event.data);
-                    } else if (event.type === "sync" && event.updatedFiles && onFilesSyncedRef.current) {
-                      onFilesSyncedRef.current(event.updatedFiles);
-                    }
-                  } catch {}
-                }
-              }
-            }
-          })
-          .catch(() => {});
-      };
+        // Route raw xterm keystrokes directly to the WebContainer shell process
+        term.onData((data) => {
+          shell.write(data).catch(() => {});
+        });
 
-      if (socket) {
-        handle.ws = socket;
+        // Route xterm resize events directly to the WebContainer process
+        term.onResize(({ cols, rows }) => {
+          shell.resize(cols, rows);
+        });
 
-        socket.onopen = () => {
-          handle.isWsConnected = true;
-          // Synchronize initial dimensions
+        // Synchronize initial dimensions
+        setTimeout(() => {
           try {
             fitAddon.fit();
-            socket?.send(
-              JSON.stringify({
-                type: "resize",
-                cols: term.cols,
-                rows: term.rows,
-              })
-            );
+            shell.resize(term.cols, term.rows);
           } catch {}
-        };
+        }, 100);
 
-        socket.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "init") {
-              if (msg.buffer && !handle.hasReceivedInitBuffer) {
-                handle.hasReceivedInitBuffer = true;
-                term.write(msg.buffer);
-              }
-            } else if (msg.type === "output" && typeof msg.data === "string") {
-              term.write(msg.data);
-            } else if (msg.type === "sync" && msg.updatedFiles && onFilesSyncedRef.current) {
-              onFilesSyncedRef.current(msg.updatedFiles);
-            }
-          } catch (err) {
-            console.warn("WebSocket parse error:", err);
-          }
-        };
-
-        socket.onerror = () => {
-          console.warn("WebSocket connection failed, switching to HTTP stream...");
-          startHttpStreamingFallback();
-        };
-
-        socket.onclose = () => {
-          if (handle.isWsConnected) {
-            handle.isWsConnected = false;
-          }
-        };
-      } else {
-        startHttpStreamingFallback();
+        // Listen for shell exit
+        shell.exit.then((code) => {
+          term.write(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m\r\n`);
+        });
+      } catch (err) {
+        console.error("[WebContainer] Failed to spawn shell:", err);
+        setRuntimeStatus("error");
+        term.write(
+          `\r\n\x1b[31m[WebContainer Error] ${
+            err instanceof Error ? err.message : "Failed to initialize WebContainer"
+          }\x1b[0m\r\n`
+        );
+        if (!webcontainerManager.isSupported()) {
+          term.write(
+            "\x1b[33mNote: WebContainers require Cross-Origin Isolation (COOP and COEP headers).\x1b[0m\r\n"
+          );
+        }
       }
-
-      // 2. Route raw xterm keystrokes directly to the PTY
-      term.onData((data) => {
-        if (handle.ws && handle.ws.readyState === WebSocket.OPEN) {
-          handle.ws.send(JSON.stringify({ type: "input", data }));
-        } else {
-          // HTTP Fallback
-          fetch(`/api/projects/${project.id}/terminal/input`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, input: data }),
-          }).catch(() => {});
-        }
-      });
-
-      // 3. Route xterm resize events directly to the PTY
-      term.onResize(({ cols, rows }) => {
-        if (handle.ws && handle.ws.readyState === WebSocket.OPEN) {
-          handle.ws.send(JSON.stringify({ type: "resize", cols, rows }));
-        } else {
-          // HTTP Fallback
-          fetch(`/api/projects/${project.id}/terminal/resize`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, cols, rows }),
-          }).catch(() => {});
-        }
-      });
     },
-    [project.id, wsPort]
+    [project.id, project.files]
   );
 
   // Initialize or reveal active xterm instance
@@ -286,7 +186,7 @@ function TerminalPanel({
       containerEl.style.width = "100%";
       masterContainerRef.current.appendChild(containerEl);
 
-      // 2. Create xterm.js instance with genuine VS Code typography
+      // 2. Create xterm.js instance
       const term = new XTerm({
         cursorBlink: true,
         cursorStyle: "block",
@@ -327,9 +227,6 @@ function TerminalPanel({
       term.loadAddon(fitAddon);
       term.loadAddon(new WebLinksAddon());
 
-      // Clipboard and shortcut integration:
-      // Allow browser native Copy (Ctrl+C / Cmd+C when text is highlighted)
-      // and native Paste (Ctrl+V / Cmd+V) to flow into xterm's built-in textarea paste handler.
       term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && term.hasSelection()) {
           return false;
@@ -346,12 +243,12 @@ function TerminalPanel({
         term,
         fitAddon,
         containerEl,
-        isWsConnected: false,
+        isReady: false,
       };
 
       sessionsMapRef.current.set(activeSessionId, handle);
 
-      // 3. Connect to backend PTY
+      // 3. Connect to in-browser WebContainer shell
       setupSessionConnection(activeSessionId, handle);
     }
 
@@ -368,7 +265,7 @@ function TerminalPanel({
         h.containerEl.style.display = "none";
       }
     });
-  }, [isOpen, activeTab, activeSessionId, setupSessionConnection]);
+  }, [isOpen, activeTab, activeSessionId, sessions, setupSessionConnection]);
 
   // Re-fit active terminal whenever terminal panel is revealed
   useEffect(() => {
@@ -379,26 +276,27 @@ function TerminalPanel({
           try {
             handle.fitAddon.fit();
           } catch {}
-        }, 30);
+        }, 80);
         return () => clearTimeout(timer);
       }
     }
-  }, [isOpen, activeTab, activeSessionId]);
+  }, [isOpen, activeTab, activeSessionId, panelHeight, isMaximized]);
 
-  // Handle Window Resize
+  // Window Resize Refit
   useEffect(() => {
     const handleResize = () => {
-      const activeHandle = sessionsMapRef.current.get(activeSessionId);
-      if (activeHandle) {
-        try {
-          activeHandle.fitAddon.fit();
-        } catch {}
+      if (isOpen && activeTab === "terminal" && activeSessionId) {
+        const handle = sessionsMapRef.current.get(activeSessionId);
+        if (handle) {
+          try {
+            handle.fitAddon.fit();
+          } catch {}
+        }
       }
     };
-
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [activeSessionId]);
+  }, [isOpen, activeTab, activeSessionId]);
 
   // Handle Drag Resizing of Terminal Panel Height
   const handleMouseDownResize = (e: MouseEvent) => {
@@ -431,47 +329,41 @@ function TerminalPanel({
     window.addEventListener("mouseup", handleMouseUp);
   };
 
-  // Create New Session Tab
-  const handleCreateSession = async (shellType?: ShellType) => {
+  // Create New Session Tab in WebContainer
+  const handleCreateSession = (shellType: ShellType = "bash") => {
     setIsShellMenuOpen(false);
-    try {
-      const res = await cloudApi.terminal.createSession(project.id, shellType);
-      await loadSessionsData();
-      setActiveSessionId(res.session.id);
-      setTimeout(() => {
-        sessionsMapRef.current.get(res.session.id)?.term.focus();
-      }, 50);
-    } catch (err) {
-      console.warn("Failed to create session:", err);
-    }
+    sessionCounterRef.current += 1;
+    const newId = `wc-session-${sessionCounterRef.current}`;
+    const newSession: TerminalTabInfo = {
+      id: newId,
+      name: `jsh (${sessions.length + 1})`,
+      shellType,
+      isRunning: true,
+      cwd: "/home/project",
+    };
+
+    setSessions((prev) => [...prev, newSession]);
+    setActiveSessionId(newId);
   };
 
   // Close Session Tab
-  const handleCloseSession = async (e: MouseEvent, sessionId: string) => {
+  const handleCloseSession = (e: MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    try {
-      const handle = sessionsMapRef.current.get(sessionId);
-      if (handle) {
-        if (handle.ws) handle.ws.close();
-        if (handle.httpAbortController) handle.httpAbortController.abort();
-        handle.term.dispose();
-        handle.containerEl.remove();
-        sessionsMapRef.current.delete(sessionId);
-      }
+    const handle = sessionsMapRef.current.get(sessionId);
+    if (handle) {
+      if (handle.shell) handle.shell.kill();
+      handle.term.dispose();
+      handle.containerEl.remove();
+      sessionsMapRef.current.delete(sessionId);
+    }
 
-      await cloudApi.terminal.closeSession(project.id, sessionId);
-      const remaining = sessions.filter((s) => s.id !== sessionId);
-      setSessions(remaining);
+    const remaining = sessions.filter((s) => s.id !== sessionId);
+    setSessions(remaining);
 
-      if (remaining.length === 0) {
-        const newSess = await cloudApi.terminal.createSession(project.id);
-        await loadSessionsData();
-        setActiveSessionId(newSess.session.id);
-      } else if (activeSessionId === sessionId) {
-        setActiveSessionId(remaining[0].id);
-      }
-    } catch (err) {
-      console.warn("Failed to close session:", err);
+    if (remaining.length === 0) {
+      handleCreateSession();
+    } else if (activeSessionId === sessionId) {
+      setActiveSessionId(remaining[0].id);
     }
   };
 
@@ -481,8 +373,7 @@ function TerminalPanel({
     return () => {
       currentSessions.forEach((handle) => {
         try {
-          if (handle.ws) handle.ws.close();
-          if (handle.httpAbortController) handle.httpAbortController.abort();
+          if (handle.shell) handle.shell.kill();
           handle.term.dispose();
           handle.containerEl.remove();
         } catch {}
@@ -492,31 +383,23 @@ function TerminalPanel({
   }, [project.id]);
 
   // Rename Session Tab
-  const handleRenameSessionSubmit = async (sessionId: string) => {
+  const handleRenameSessionSubmit = (sessionId: string) => {
     if (!editingName.trim()) {
       setEditingSessionId(null);
       return;
     }
-    try {
-      await cloudApi.terminal.renameSession(project.id, sessionId, editingName.trim());
-      setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, name: editingName.trim() } : s))
-      );
-    } catch (err) {
-      console.warn("Failed to rename session:", err);
-    } finally {
-      setEditingSessionId(null);
-    }
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, name: editingName.trim() } : s))
+    );
+    setEditingSessionId(null);
   };
 
-  // Kill Running Process / Send Ctrl+C
+  // Kill Running Foreground Process (Ctrl+C)
   const handleKillActive = () => {
     if (!activeSessionId) return;
     const handle = sessionsMapRef.current.get(activeSessionId);
-    if (handle?.ws && handle.ws.readyState === WebSocket.OPEN) {
-      handle.ws.send(JSON.stringify({ type: "kill" }));
-    } else {
-      cloudApi.terminal.killSession(project.id, activeSessionId);
+    if (handle?.shell) {
+      handle.shell.write("\x03"); // SIGINT / Ctrl+C
     }
   };
 
@@ -526,10 +409,19 @@ function TerminalPanel({
     const handle = sessionsMapRef.current.get(activeSessionId);
     if (handle) {
       handle.term.clear();
-      // Send Ctrl+L to shell
-      if (handle.ws && handle.ws.readyState === WebSocket.OPEN) {
-        handle.ws.send(JSON.stringify({ type: "input", data: "\x0c" }));
+      if (handle.shell) {
+        handle.shell.write("\x0c"); // Ctrl+L
       }
+    }
+  };
+
+  // Helper to send a command line to the active terminal
+  const handleRunCommand = (command: string) => {
+    if (!activeSessionId) return;
+    const handle = sessionsMapRef.current.get(activeSessionId);
+    if (handle?.shell) {
+      handle.shell.write(`${command}\r`);
+      handle.term.focus();
     }
   };
 
@@ -624,9 +516,9 @@ function TerminalPanel({
           </button>
         </div>
 
-        {/* Center: Terminal Tab Pills (VS Code Multiple Terminals) */}
+        {/* Center: Terminal Tab Pills */}
         {activeTab === "terminal" && sessions.length > 0 && (
-          <div className="flex items-center gap-1.5 max-w-[50%] overflow-x-auto no-scrollbar py-0.5">
+          <div className="flex items-center gap-1.5 max-w-[40%] overflow-x-auto no-scrollbar py-0.5">
             {sessions.map((sess) => {
               const isSelected = sess.id === activeSessionId;
               return (
@@ -683,14 +575,40 @@ function TerminalPanel({
         )}
 
         {/* Right: Actions Toolbar */}
-        <div className="flex items-center gap-1 text-neutral-400">
+        <div className="flex items-center gap-1.5 text-neutral-400">
           {activeTab === "terminal" && (
             <>
-              {/* Working Directory Indicator */}
-              <div className="hidden lg:flex items-center gap-1 font-mono text-[11px] text-neutral-400 bg-black/40 px-2 py-0.5 rounded mr-1 border border-neutral-800">
-                <Folder className="w-3 h-3 text-amber-400" />
-                <span className="text-emerald-400">~/project</span>
+              {/* WebContainer Runtime Badge */}
+              <div
+                className="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded border border-neutral-700 bg-black/40 text-neutral-300"
+                title="Code runs entirely in your browser using WebContainers"
+              >
+                <Cpu className="w-3 h-3 text-cyan-400" />
+                <span className="text-cyan-300">WebContainer</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               </div>
+
+              {/* Quick Action: npm install */}
+              <button
+                type="button"
+                onClick={() => handleRunCommand("npm install")}
+                title="Run 'npm install' inside WebContainer"
+                className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-300 text-[11px] font-mono flex items-center gap-1 transition cursor-pointer"
+              >
+                <Package className="w-3 h-3 text-amber-400" />
+                <span className="hidden sm:inline">npm i</span>
+              </button>
+
+              {/* Quick Action: npm run dev */}
+              <button
+                type="button"
+                onClick={() => handleRunCommand("npm run dev")}
+                title="Run 'npm run dev' inside WebContainer"
+                className="px-2 py-0.5 rounded bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-800/60 text-emerald-300 text-[11px] font-mono flex items-center gap-1 transition cursor-pointer"
+              >
+                <Play className="w-3 h-3 text-emerald-400 fill-current" />
+                <span className="hidden sm:inline">npm run dev</span>
+              </button>
 
               {/* Stop Running Process (Ctrl+C) */}
               <button
@@ -723,7 +641,7 @@ function TerminalPanel({
                     <div className="px-2.5 py-1 text-[10px] text-neutral-400 font-sans uppercase font-bold border-b border-[#333333]">
                       Available Shells
                     </div>
-                    {availableShells.map((sh) => (
+                    {DEFAULT_AVAILABLE_SHELLS.map((sh) => (
                       <button
                         key={sh.type + sh.label}
                         type="button"
@@ -756,18 +674,18 @@ function TerminalPanel({
             <button
               type="button"
               onClick={onClearConsole}
-              title="Clear output console"
+              title="Clear Console Output"
               className="p-1 hover:text-white rounded hover:bg-[#333333] transition cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
 
-          {/* Maximize / Restore Button */}
+          {/* Maximize / Restore Toggle */}
           <button
             type="button"
             onClick={() => setIsMaximized((prev) => !prev)}
-            title={isMaximized ? "Restore panel size" : "Maximize panel"}
+            title={isMaximized ? "Restore Panel Size" : "Maximize Panel Size"}
             className="p-1 hover:text-white rounded hover:bg-[#333333] transition cursor-pointer"
           >
             {isMaximized ? (
@@ -777,12 +695,11 @@ function TerminalPanel({
             )}
           </button>
 
-          {/* Close Panel Button */}
+          {/* Close Bottom Panel */}
           <button
             type="button"
-            onMouseDown={(e) => e.preventDefault()}
             onClick={onToggle}
-            title="Hide panel"
+            title="Close Panel"
             className="p-1 hover:text-white rounded hover:bg-[#333333] transition cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
@@ -790,63 +707,63 @@ function TerminalPanel({
         </div>
       </div>
 
-      {/* Main Panel Content Body */}
-      <div className="flex-1 overflow-hidden relative bg-[#181818]">
-        {/* Terminal Tab: Persistent PTY-driven xterm Canvas */}
+      {/* Main Panel Viewport */}
+      <div className="flex-1 w-full h-full relative overflow-hidden bg-[#181818]">
+        {/* View 1: Multi-tab Integrated Terminal */}
         <div
           ref={masterContainerRef}
           onContextMenu={handleContextMenu}
           style={{ display: activeTab === "terminal" ? "block" : "none" }}
-          className="w-full h-full p-2 overflow-hidden cursor-text select-text"
-          onClick={() => {
-            if (activeSessionId) {
-              sessionsMapRef.current.get(activeSessionId)?.term.focus();
-            }
-          }}
+          className="w-full h-full p-2 overflow-hidden select-text"
         />
 
-        {/* Output / Console Tab Content */}
+        {/* View 2: Output / Console Logs */}
         {activeTab === "output" && (
-          <div className="h-full overflow-y-auto p-3 text-neutral-300 font-mono text-xs space-y-1">
+          <div className="w-full h-full overflow-y-auto p-3 font-mono text-xs select-text space-y-1">
             {consoleMessages.length === 0 ? (
-              <div className="text-neutral-500 italic py-2">
-                No runtime logs yet. Preview activity and system events will appear here.
+              <div className="text-neutral-500 italic py-4 text-center">
+                No console messages recorded. Run the preview or execute code to view output logs.
               </div>
             ) : (
-              consoleMessages.map((msg) => (
+              consoleMessages.map((msg, index) => (
                 <div
-                  key={msg.id}
-                  className={`flex items-start gap-2 py-0.5 ${
+                  key={index}
+                  className={`flex items-start gap-2 py-0.5 border-b border-neutral-800/40 ${
                     msg.type === "error"
-                      ? "text-rose-400 bg-rose-950/20 px-1 rounded"
+                      ? "text-rose-400"
                       : msg.type === "warn"
                       ? "text-amber-400"
+                      : msg.type === "info"
+                      ? "text-sky-400"
                       : "text-neutral-300"
                   }`}
                 >
-                  <span className="text-neutral-600 select-none text-[10px]">
+                  <span className="text-[10px] text-neutral-500 shrink-0">
                     {new Date(msg.timestamp).toLocaleTimeString()}
                   </span>
-                  <span className="font-semibold uppercase text-[10px] select-none text-neutral-500">
+                  <span className="text-[10px] font-bold uppercase shrink-0">
                     [{msg.type}]
                   </span>
-                  <span className="flex-1 whitespace-pre-wrap break-all">{msg.content}</span>
+                  <span className="whitespace-pre-wrap break-all flex-1">{msg.content}</span>
                 </div>
               ))
             )}
           </div>
         )}
 
-        {/* Problems Tab Content */}
+        {/* View 3: Problems & Diagnostic List */}
         {activeTab === "problems" && (
-          <div className="h-full overflow-y-auto p-4 flex items-center gap-2 text-neutral-400 text-xs">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>Workspace is healthy. No unresolved compiler errors or diagnostics detected.</span>
+          <div className="w-full h-full overflow-y-auto p-4 font-mono text-xs select-text">
+            <div className="flex items-center gap-2 text-emerald-400 font-semibold mb-2">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>No workspace diagnostics or syntax errors detected.</span>
+            </div>
+            <p className="text-neutral-500 text-[11px] leading-relaxed">
+              Monaco Editor provides real-time language diagnostics, syntax checking, and type validation directly in the editor buffer.
+            </p>
           </div>
         )}
       </div>
     </div>
   );
 }
-
-export default React.memo(TerminalPanel);
