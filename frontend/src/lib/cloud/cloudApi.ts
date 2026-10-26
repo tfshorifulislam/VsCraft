@@ -249,6 +249,37 @@ export const cloudApi = {
       if (!res.ok) throw new Error("Failed to empty trash.");
     },
 
+    async sync(
+      id: string,
+      files?: Array<{ path: string; name: string; content?: string | null; isFolder: boolean; language?: string }>
+    ): Promise<{ success: boolean; files: ProjectFile[]; message?: string }> {
+      const res = await fetch(`/api/projects/${id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to synchronize project files.");
+      }
+      const data = await res.json();
+      return {
+        success: data.success,
+        message: data.message,
+        files: (data.files || []).map((f: Record<string, unknown>) => ({
+          id: f.id as string,
+          name: f.name as string,
+          path: f.path as string,
+          content: (f.content as string) || "",
+          language: (f.language as string) || "plaintext",
+          isFolder: Boolean(f.isFolder),
+          parentId: (f.parentId as string | null) || null,
+          version: typeof f.version === "number" ? f.version : 1,
+          updatedAt: typeof f.updatedAt === "string" ? new Date(f.updatedAt).getTime() : f.updatedAt || Date.now(),
+        })),
+      };
+    },
+
     async importArchive(payload: FormData | { name: string; description?: string; zipBase64: string }): Promise<{ project: Project; detection: unknown }> {
       let requestBody: string;
 

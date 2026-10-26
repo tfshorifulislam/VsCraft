@@ -34,6 +34,7 @@ import {
 import JSZip from "jszip";
 import crypto from "crypto";
 import fsp from "fs/promises";
+import path from "path";
 
 const router = Router();
 
@@ -1044,6 +1045,155 @@ router.post("/:id/sync", requireAuth, async (req: AuthenticatedRequest, res: Res
   }
 
   try {
+    const incomingFiles = req.body?.files;
+
+    if (Array.isArray(incomingFiles)) {
+      // 1. Sanitize incoming file paths from browser WebContainer
+      const validFiles: Array<{
+        path: string;
+        name: string;
+        content: string;
+        isFolder: boolean;
+        language: string;
+      }> = [];
+
+      for (const item of incomingFiles) {
+        if (!item || typeof item.path !== "string") continue;
+        let sanitized: string;
+        try {
+          sanitized = sanitizePath(item.path);
+        } catch {
+          continue;
+        }
+        if (!sanitized || isIgnored(sanitized)) continue;
+
+        const name =
+          typeof item.name === "string" && item.name
+            ? item.name
+            : sanitized.split("/").pop() || "file";
+
+        const isFolder = Boolean(item.isFolder);
+        const content = typeof item.content === "string" ? item.content : "";
+        const ext = name.split(".").pop()?.toLowerCase() || "";
+        const language = item.language || (isFolder ? "" : ext || "plaintext");
+
+        validFiles.push({
+          path: sanitized,
+          name,
+          content,
+          isFolder,
+          language,
+        });
+      }
+
+      // 2. Atomically reconcile with database
+      const synced = await prisma.$transaction(async (tx) => {
+        const existingDbFiles = await tx.projectFile.findMany({
+          where: { projectId },
+        });
+
+        const dbFileMap = new Map<string, (typeof existingDbFiles)[0]>();
+        const folderIdMap = new Map<string, string>();
+
+        for (const f of existingDbFiles) {
+          dbFileMap.set(f.path, f);
+          if (f.isFolder) folderIdMap.set(f.path, f.id);
+        }
+
+        // Create missing folders first
+        for (const item of validFiles) {
+          if (!item.isFolder) continue;
+          if (!dbFileMap.has(item.path)) {
+            const parentRel = path.posix.dirname(item.path);
+            const parentId =
+              parentRel !== "." ? folderIdMap.get(parentRel) || null : null;
+            const created = await tx.projectFile.create({
+              data: {
+                id: generateId("f_dir"),
+                projectId,
+                name: item.name,
+                path: item.path,
+                content: "",
+                language: "",
+                isFolder: true,
+                parentId,
+                version: 1,
+              },
+            });
+            folderIdMap.set(item.path, created.id);
+            dbFileMap.set(item.path, created);
+          }
+        }
+
+        // Create or update files
+        for (const item of validFiles) {
+          if (item.isFolder) continue;
+          const parentRel = path.posix.dirname(item.path);
+          const parentId =
+            parentRel !== "." ? folderIdMap.get(parentRel) || null : null;
+          const existing = dbFileMap.get(item.path);
+
+          if (!existing) {
+            const created = await tx.projectFile.create({
+              data: {
+                id: generateId("f"),
+                projectId,
+                name: item.name,
+                path: item.path,
+                content: item.content,
+                language: item.language,
+                isFolder: false,
+                parentId,
+                version: 1,
+              },
+            });
+            dbFileMap.set(item.path, created);
+          } else if (existing.content !== item.content) {
+            const updated = await tx.projectFile.update({
+              where: { id: existing.id },
+              data: {
+                content: item.content,
+                language: item.language,
+                version: existing.version + 1,
+                updatedAt: new Date(),
+              },
+            });
+            dbFileMap.set(item.path, updated);
+          }
+        }
+
+        // Remove deleted files if validFiles were sent
+        if (validFiles.length > 0) {
+          const incomingPathSet = new Set(validFiles.map((f) => f.path));
+          const toDelete = existingDbFiles
+            .filter((f) => !incomingPathSet.has(f.path) && !isIgnored(f.path))
+            .sort((a, b) => b.path.length - a.path.length);
+
+          for (const del of toDelete) {
+            await tx.projectFile.delete({ where: { id: del.id } }).catch(() => {});
+          }
+        }
+
+        // Update project updatedAt
+        await tx.project.update({
+          where: { id: projectId },
+          data: { updatedAt: new Date() },
+        });
+
+        return await tx.projectFile.findMany({
+          where: { projectId },
+          orderBy: [{ isFolder: "desc" }, { path: "asc" }],
+        });
+      });
+
+      return res.json({
+        success: true,
+        files: synced,
+        message: `Synchronized ${synced.length} files from WebContainer to database.`,
+      });
+    }
+
+    // Disk sync fallback
     await ensureWorkspaceOnDisk(project);
     const files = await syncDiskToDatabase(projectId);
     return res.json({

@@ -1,10 +1,18 @@
-import type { FileSystemTree, WebContainer, WebContainerProcess } from "@webcontainer/api";
+import type { FileSystemTree, WebContainer, WebContainerProcess, IFSWatcher } from "@webcontainer/api";
 
 export interface WebContainerShellHandle {
   write: (data: string) => Promise<void>;
   resize: (cols: number, rows: number) => void;
   kill: () => void;
   exit: Promise<number>;
+}
+
+export interface ExportedVirtualFile {
+  path: string;
+  name: string;
+  content: string;
+  isFolder: boolean;
+  language: string;
 }
 
 type ServerReadyCallback = (port: number, url: string) => void;
@@ -19,6 +27,9 @@ class WebContainerManager {
   private latestServerUrl: string | null = null;
   private latestServerPort: number | null = null;
   private activePorts = new Set<number>();
+  private fsChangeCallbacks = new Set<() => void>();
+  private fsWatcher: IFSWatcher | null = null;
+  private watchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Check whether the browser runtime supports WebContainers.
@@ -162,6 +173,7 @@ class WebContainerManager {
     }
 
     await container.fs.writeFile(cleanPath, content);
+    this.notifyFsChange();
   }
 
   /**
@@ -171,6 +183,7 @@ class WebContainerManager {
     const container = await this.getInstance();
     const cleanPath = filePath.replace(/^\/+/, "");
     await container.fs.rm(cleanPath, { recursive: true, force: true }).catch(() => {});
+    this.notifyFsChange();
   }
 
   /**
@@ -192,8 +205,153 @@ class WebContainerManager {
       const content = await container.fs.readFile(cleanOld);
       await container.fs.writeFile(cleanNew, content);
       await container.fs.rm(cleanOld, { recursive: true, force: true });
+      this.notifyFsChange();
     } catch (err) {
       console.warn(`[WebContainer] Failed to rename ${oldPath} to ${newPath}:`, err);
+    }
+  }
+
+  /**
+   * Recursively flatten a WebContainer FileSystemTree into an array of project files.
+   */
+  public flattenFileSystemTree(tree: FileSystemTree, parentPath = ""): ExportedVirtualFile[] {
+    const result: ExportedVirtualFile[] = [];
+
+    const IGNORED_NAMES = new Set([
+      "node_modules",
+      ".git",
+      ".next",
+      "dist",
+      "build",
+      ".turbo",
+      ".cache",
+      ".DS_Store",
+      "Thumbs.db",
+      ".npmrc",
+      "package-lock.json.bak",
+    ]);
+
+    for (const [name, entry] of Object.entries(tree)) {
+      if (IGNORED_NAMES.has(name)) continue;
+
+      const currentPath = parentPath ? `${parentPath}/${name}` : name;
+
+      if ("directory" in entry && entry.directory) {
+        result.push({
+          path: currentPath,
+          name,
+          content: "",
+          isFolder: true,
+          language: "",
+        });
+        result.push(...this.flattenFileSystemTree(entry.directory, currentPath));
+      } else if ("file" in entry && entry.file && "contents" in entry.file) {
+        let content = "";
+        const raw = entry.file.contents;
+        if (typeof raw === "string") {
+          content = raw;
+        } else if (raw instanceof Uint8Array) {
+          try {
+            content = new TextDecoder().decode(raw);
+          } catch {
+            content = "";
+          }
+        }
+        const ext = name.split(".").pop()?.toLowerCase() || "";
+        const isImage = ["png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "avif"].includes(ext);
+        result.push({
+          path: currentPath,
+          name,
+          content,
+          isFolder: false,
+          language: isImage ? "image" : ext || "plaintext",
+        });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Export all project files from the WebContainer virtual filesystem.
+   * Excludes bulky/generated directories like node_modules and .next.
+   */
+  public async exportProjectFiles(): Promise<ExportedVirtualFile[]> {
+    const container = await this.getInstance();
+    const tree = await container.export(".", {
+      format: "json",
+      excludes: [
+        "**/node_modules/**",
+        "**/.next/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/.git/**",
+        "**/.turbo/**",
+        "**/.cache/**",
+        "**/.DS_Store",
+        "**/Thumbs.db",
+        "**/.npmrc",
+        "**/package-lock.json.bak",
+      ],
+    });
+    return this.flattenFileSystemTree(tree);
+  }
+
+  /**
+   * Subscribe to WebContainer filesystem changes.
+   * Debounces notifications by 800ms to coalesce bursts of file operations.
+   */
+  public startWatching(callback: () => void): () => void {
+    this.fsChangeCallbacks.add(callback);
+    this.ensureFsWatcherStarted();
+    return () => {
+      this.fsChangeCallbacks.delete(callback);
+    };
+  }
+
+  /**
+   * Manually or programmatically trigger a filesystem change event.
+   */
+  public notifyFsChange(): void {
+    if (this.watchDebounceTimer) {
+      clearTimeout(this.watchDebounceTimer);
+    }
+    this.watchDebounceTimer = setTimeout(() => {
+      this.fsChangeCallbacks.forEach((cb) => {
+        try {
+          cb();
+        } catch (err) {
+          console.error("[WebContainer] FS watch callback error:", err);
+        }
+      });
+    }, 800);
+  }
+
+  private async ensureFsWatcherStarted(): Promise<void> {
+    if (this.fsWatcher || typeof window === "undefined") return;
+    try {
+      const container = await this.getInstance();
+      this.fsWatcher = container.fs.watch(".", { recursive: true }, (_event, filename) => {
+        const name =
+          typeof filename === "string"
+            ? filename
+            : filename
+            ? new TextDecoder().decode(filename)
+            : "";
+        if (
+          name.includes("node_modules") ||
+          name.includes(".next") ||
+          name.includes("dist") ||
+          name.includes("build") ||
+          name.includes(".git") ||
+          name.includes(".turbo")
+        ) {
+          return;
+        }
+        this.notifyFsChange();
+      });
+    } catch (err) {
+      console.warn("[WebContainer] FS watcher initialization warning:", err);
     }
   }
 

@@ -273,7 +273,7 @@ export default function ProjectsDashboard() {
         name: "Empty Project",
         description: "Empty workspace ready for custom files",
       });
-      router.push(`/editor/${emptyProj.id}`);
+      router.push(`/editor/${emptyProj.id}?init=terminal`);
     } catch (err) {
       console.error("Create empty project error:", err);
       alert("Failed to create empty project in cloud.");
@@ -579,7 +579,7 @@ export default function ProjectsDashboard() {
         onClose={() => setIsNewProjectOpen(false)}
         onCreated={(id) => {
           requestProjectReload();
-          router.push(`/editor/${id}`);
+          router.push(`/editor/${id}?init=terminal`);
         }}
       />
 

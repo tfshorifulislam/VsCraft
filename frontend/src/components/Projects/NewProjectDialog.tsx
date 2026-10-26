@@ -12,6 +12,7 @@ import {
   Loader2,
   ArrowRight,
   FolderPlus,
+  Terminal,
 } from "lucide-react";
 import { cloudApi } from "@/lib/cloud/cloudApi";
 import { ProjectTemplate } from "@/types/editor";
@@ -23,7 +24,7 @@ interface NewProjectDialogProps {
 }
 
 interface TemplateOption {
-  id: ProjectTemplate | "blank";
+  id: ProjectTemplate | "blank" | "terminal";
   name: string;
   desc: string;
   tag: string;
@@ -31,6 +32,13 @@ interface TemplateOption {
 }
 
 const TEMPLATE_OPTIONS: TemplateOption[] = [
+  {
+    id: "terminal",
+    name: "Terminal Scaffolding (WebContainer)",
+    desc: "Interactive in-browser WebContainer terminal. Run npm create vite, npx create-next-app, or npm init directly.",
+    tag: "Interactive",
+    icon: <Terminal className="w-5 h-5 text-emerald-400" />,
+  },
   {
     id: "react-ts",
     name: "React + TypeScript",
@@ -75,7 +83,7 @@ export default function NewProjectDialog({
 }: NewProjectDialogProps) {
   const router = useRouter();
   const [projectName, setProjectName] = useState("my-app");
-  const [selectedTemplate, setSelectedTemplate] = useState<ProjectTemplate | "blank">("react-ts");
+  const [selectedTemplate, setSelectedTemplate] = useState<ProjectTemplate | "blank" | "terminal">("terminal");
   const [isCreating, setIsCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -90,12 +98,15 @@ export default function NewProjectDialog({
 
     try {
       let created;
-      if (selectedTemplate === "blank") {
+      if (selectedTemplate === "terminal" || selectedTemplate === "blank") {
         created = await cloudApi.projects.create({
           type: "blank",
           blankSubtype: "empty",
           name: projectName.trim(),
-          description: "Empty workspace ready for custom files",
+          description:
+            selectedTemplate === "terminal"
+              ? "Terminal-based project created with WebContainer runtime"
+              : "Empty workspace ready for custom files",
         });
       } else {
         created = await cloudApi.projects.create({
@@ -110,7 +121,7 @@ export default function NewProjectDialog({
       if (onCreated) {
         onCreated(created.id);
       } else {
-        router.push(`/editor/${encodeURIComponent(created.id)}`);
+        router.push(`/editor/${encodeURIComponent(created.id)}?init=terminal`);
       }
     } catch (err) {
       console.error("Project creation error:", err);

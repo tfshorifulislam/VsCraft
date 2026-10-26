@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import ActivityBar from "./ActivityBar";
 import FileExplorer from "./FileExplorer";
 import ResizableSidebar from "./ResizableSidebar";
@@ -101,12 +101,36 @@ function getTimestamp(): number {
   return Date.now();
 }
 
+function findBestEntryFile(files: ProjectFile[]): ProjectFile | null {
+  const nonFolders = files.filter((f) => !f.isFolder);
+  if (nonFolders.length === 0) return null;
+
+  const priorityPatterns = [
+    /src\/App\.(tsx|jsx|js|ts)$/i,
+    /app\/page\.(tsx|jsx|js|ts)$/i,
+    /src\/main\.(tsx|jsx|js|ts)$/i,
+    /src\/index\.(tsx|jsx|js|ts)$/i,
+    /index\.html$/i,
+    /index\.(js|ts)$/i,
+    /package\.json$/i,
+  ];
+
+  for (const pattern of priorityPatterns) {
+    const found = nonFolders.find((f) => pattern.test(f.path));
+    if (found) return found;
+  }
+
+  return nonFolders[0] || null;
+}
+
 interface EditorLayoutProps {
   initialProjectId?: string;
 }
 
 export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initMode = searchParams ? searchParams.get("init") : null;
   const saveTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const persistedTabsRef = useRef<string | null>(null);
   const loadedFileIdsRef = useRef<Set<string>>(new Set());
@@ -148,6 +172,14 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 });
   const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([]);
   const [hasOpenedTerminal, setHasOpenedTerminal] = useState(false);
+
+  useEffect(() => {
+    if (initMode === "terminal" || (activeProject && activeProject.files.length <= 1)) {
+      setIsTerminalOpen(true);
+      setHasOpenedTerminal(true);
+      setTerminalTab("terminal");
+    }
+  }, [initMode, activeProject]);
 
   useEffect(() => {
     activeProjectRef.current = activeProject;
@@ -994,20 +1026,67 @@ export default function EditorLayout({ initialProjectId }: EditorLayoutProps) {
     });
   }, [activeProject?.id]);
 
+  // Real-time synchronization: WebContainer FS -> Editor & Database
+  useEffect(() => {
+    if (!activeProject?.id) return;
+
+    const unsubscribe = webcontainerManager.startWatching(async () => {
+      try {
+        const exported = await webcontainerManager.exportProjectFiles();
+        if (!exported || exported.length === 0) return;
+
+        const syncRes = await cloudApi.projects.sync(activeProject.id, exported);
+        if (syncRes.success && Array.isArray(syncRes.files)) {
+          handleFilesSynced(syncRes.files);
+
+          const currentGroups = editorGroupsRef.current;
+          const hasOpen =
+            currentGroups &&
+            currentGroups.groups.some((g) => g.fileIds.length > 0);
+          if (!hasOpen) {
+            const entry = findBestEntryFile(syncRes.files);
+            if (entry) {
+              handleSelectFile(entry.id);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[EditorLayout] Auto-sync from WebContainer FS error:", err);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [activeProject?.id, handleFilesSynced, handleSelectFile]);
+
   const handleRefreshWorkspaceFiles = useCallback(async () => {
     if (!activeProject?.id) return;
     try {
-      const res = await fetch(`/api/projects/${activeProject.id}/sync`, { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.files && Array.isArray(data.files)) {
-          handleFilesSynced(data.files);
+      const exported = await webcontainerManager
+        .exportProjectFiles()
+        .catch(() => []);
+      const syncRes = await cloudApi.projects.sync(
+        activeProject.id,
+        exported.length > 0 ? exported : undefined
+      );
+      if (syncRes.files && Array.isArray(syncRes.files)) {
+        handleFilesSynced(syncRes.files);
+        const currentGroups = editorGroupsRef.current;
+        const hasOpen =
+          currentGroups &&
+          currentGroups.groups.some((g) => g.fileIds.length > 0);
+        if (!hasOpen) {
+          const entry = findBestEntryFile(syncRes.files);
+          if (entry) {
+            handleSelectFile(entry.id);
+          }
         }
       }
     } catch (err) {
       console.warn("Manual workspace refresh failed:", err);
     }
-  }, [activeProject?.id, handleFilesSynced]);
+  }, [activeProject?.id, handleFilesSynced, handleSelectFile]);
 
   const handleRunPreview = useCallback(() => {
     if (activeFile && unsavedFiles[activeFile.id]) {

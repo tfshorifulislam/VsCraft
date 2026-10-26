@@ -10,6 +10,7 @@
     "test:import": "node -r dotenv/config scripts/import-regression.cjs",
     "test:isolation": "node -r dotenv/config scripts/project-isolation-regression.cjs",
     "test:terminal": "node -r dotenv/config scripts/terminal-workflow-regression.cjs",
+    "test:terminal-e2e": "node -r dotenv/config scripts/terminal-project-e2e.cjs",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"
   },

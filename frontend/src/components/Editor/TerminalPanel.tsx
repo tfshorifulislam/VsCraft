@@ -16,9 +16,12 @@ import {
   Play,
   Package,
   Cpu,
+  RefreshCw,
+  Zap,
 } from "lucide-react";
 import { BottomTab, ConsoleMessage, Project, ProjectFile, ShellType, TerminalTabInfo, AvailableShell } from "@/types/editor";
 import { webcontainerManager, type WebContainerShellHandle } from "@/lib/webcontainer/webcontainerManager";
+import { cloudApi } from "@/lib/cloud/cloudApi";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -80,6 +83,7 @@ export default function TerminalPanel({
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [_runtimeStatus, setRuntimeStatus] = useState<"idle" | "booting" | "ready" | "error">("idle");
+  const [isSyncing, setIsSyncing] = useState(false);
   const sessionCounterRef = useRef<number>(1);
 
   // Map of active xterm sessions: sessionId -> ActiveSessionHandle
@@ -90,6 +94,22 @@ export default function TerminalPanel({
   useEffect(() => {
     onFilesSyncedRef.current = onFilesSynced;
   }, [onFilesSynced]);
+
+  const handleManualSync = useCallback(async () => {
+    if (isSyncing) return;
+    try {
+      setIsSyncing(true);
+      const exported = await webcontainerManager.exportProjectFiles();
+      const res = await cloudApi.projects.sync(project.id, exported);
+      if (res.success && res.files && onFilesSyncedRef.current) {
+        onFilesSyncedRef.current(res.files);
+      }
+    } catch (err) {
+      console.warn("[Terminal] Manual sync failed:", err);
+    } finally {
+      setTimeout(() => setIsSyncing(false), 600);
+    }
+  }, [isSyncing, project.id]);
 
   // Connect a session's xterm directly to WebContainer's in-browser shell
   const setupSessionConnection = useCallback(
@@ -123,6 +143,22 @@ export default function TerminalPanel({
 
         term.write("\x1b[32m[WebContainer]\x1b[0m Ready! Terminal commands run directly inside browser.\r\n");
 
+        if (project.files.length <= 1) {
+          term.write("\r\n\x1b[1;36m╭─────────────────────────────────────────────────────────────╮\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m  \x1b[1;37m🚀 Terminal Project Creation (WebContainer In-Browser)\x1b[0m    \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m                                                             \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m  \x1b[90mCommands run directly inside your browser's WebContainer.\x1b[0m \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m  \x1b[90mScaffolded files mount automatically into Monaco Editor.\x1b[0m  \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m                                                             \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m  \x1b[33mStarter Scaffolding Commands:\x1b[0m                              \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m    • \x1b[32mnpm create vite@latest . -- --template react-ts\x1b[0m        \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m    • \x1b[32mnpx create-next-app@latest . --ts --tailwind --app\x1b[0m     \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m    • \x1b[32mnpm init -y && npm i express\x1b[0m                           \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m    • \x1b[32mnpm install\x1b[0m                                            \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m│\x1b[0m    • \x1b[32mnpm run dev\x1b[0m                                            \x1b[1;36m│\x1b[0m\r\n");
+          term.write("\x1b[1;36m╰─────────────────────────────────────────────────────────────╯\x1b[0m\r\n\r\n");
+        }
+
         // Route raw xterm keystrokes directly to the WebContainer shell process
         term.onData((data) => {
           shell.write(data).catch(() => {});
@@ -144,6 +180,7 @@ export default function TerminalPanel({
         // Listen for shell exit
         shell.exit.then((code) => {
           term.write(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m\r\n`);
+          webcontainerManager.notifyFsChange();
         });
       } catch (err) {
         console.error("[WebContainer] Failed to spawn shell:", err);
@@ -422,6 +459,13 @@ export default function TerminalPanel({
     if (handle?.shell) {
       handle.shell.write(`${command}\r`);
       handle.term.focus();
+      // Periodically trigger FS notification in case files are being created by the command
+      setTimeout(() => {
+        webcontainerManager.notifyFsChange();
+      }, 1500);
+      setTimeout(() => {
+        webcontainerManager.notifyFsChange();
+      }, 4000);
     }
   };
 
@@ -588,6 +632,28 @@ export default function TerminalPanel({
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               </div>
 
+              {/* Quick Scaffolding: Vite React */}
+              <button
+                type="button"
+                onClick={() => handleRunCommand("npm create vite@latest . -- --template react-ts")}
+                title="Scaffold Vite + React + TypeScript inside WebContainer"
+                className="px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/60 text-cyan-300 text-[11px] font-mono flex items-center gap-1 transition cursor-pointer"
+              >
+                <Zap className="w-3 h-3 text-cyan-400 fill-current" />
+                <span className="hidden md:inline">Vite</span>
+              </button>
+
+              {/* Quick Scaffolding: Next.js */}
+              <button
+                type="button"
+                onClick={() => handleRunCommand("npx create-next-app@latest . --ts --tailwind --app --yes")}
+                title="Scaffold Next.js App Router inside WebContainer"
+                className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-300 text-[11px] font-mono flex items-center gap-1 transition cursor-pointer"
+              >
+                <span className="font-bold text-[10px] text-white">▲</span>
+                <span className="hidden md:inline">Next</span>
+              </button>
+
               {/* Quick Action: npm install */}
               <button
                 type="button"
@@ -608,6 +674,18 @@ export default function TerminalPanel({
               >
                 <Play className="w-3 h-3 text-emerald-400 fill-current" />
                 <span className="hidden sm:inline">npm run dev</span>
+              </button>
+
+              {/* Manual WebContainer File Sync */}
+              <button
+                type="button"
+                onClick={handleManualSync}
+                disabled={isSyncing}
+                title="Sync files from WebContainer virtual FS to Editor & Database"
+                className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-300 text-[11px] font-mono flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3 h-3 text-sky-400 ${isSyncing ? "animate-spin" : ""}`} />
+                <span className="hidden sm:inline">{isSyncing ? "Syncing..." : "Sync"}</span>
               </button>
 
               {/* Stop Running Process (Ctrl+C) */}
