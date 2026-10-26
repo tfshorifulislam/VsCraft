@@ -485,8 +485,8 @@ export async function importProjectFileBatch(
     );
   }
 
-  const [sizeRow] = await prisma.$queryRaw<Array<{ totalChars: bigint }>>`
-    SELECT COALESCE(SUM(LENGTH(content)), 0)::bigint AS "totalChars"
+  const [sizeRow] = await prisma.$queryRaw<Array<{ totalChars: any }>>`
+    SELECT CAST(COALESCE(SUM(LENGTH(content)), 0) AS INTEGER) AS "totalChars"
     FROM "ProjectFile"
     WHERE "projectId" = ${projectId}
   `;

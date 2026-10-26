@@ -247,7 +247,7 @@ export async function getUserProjects(userId: string, category: "all" | "recent"
   if (previewFileIds.length === 0) return projects;
 
   const previews = await prisma.$queryRaw<Array<{ id: string; preview: string }>>`
-    SELECT id, left(content, CAST(${PROJECT_CARD_PREVIEW_CHARS} AS integer)) AS preview
+    SELECT id, substr(content, 1, ${PROJECT_CARD_PREVIEW_CHARS}) AS preview
     FROM "ProjectFile"
     WHERE id IN (${Prisma.join(previewFileIds)})
   `;
@@ -292,12 +292,16 @@ export async function getProjectById(
 
   let totalBytes = 0;
   if (options.includeContent !== "full") {
-    const [size] = await prisma.$queryRaw<Array<{ bytes: bigint }>>`
-      SELECT coalesce(sum(octet_length(content)), 0) AS bytes
-      FROM "ProjectFile"
-      WHERE "projectId" = ${projectId} AND "isFolder" = false
-    `;
-    totalBytes = Number(size?.bytes || 0);
+    try {
+      const [size] = await prisma.$queryRaw<Array<{ bytes: any }>>`
+        SELECT coalesce(sum(length(content)), 0) AS bytes
+        FROM "ProjectFile"
+        WHERE "projectId" = ${projectId} AND ("isFolder" = 0 OR "isFolder" = false)
+      `;
+      totalBytes = Number(size?.bytes || 0);
+    } catch {
+      totalBytes = 0;
+    }
   }
 
   const includeAll =
