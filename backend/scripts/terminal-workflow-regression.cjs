@@ -62,7 +62,8 @@ async function signup() {
 function connectTerminal(projectId, sessionId, wsPort) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(
-      `ws://127.0.0.1:${wsPort}?projectId=${encodeURIComponent(projectId)}&sessionId=${encodeURIComponent(sessionId)}`
+      `ws://127.0.0.1:${wsPort}?projectId=${encodeURIComponent(projectId)}&sessionId=${encodeURIComponent(sessionId)}`,
+      { headers: { Cookie: createdUser?.cookie || "" } }
     );
     socket = ws;
 

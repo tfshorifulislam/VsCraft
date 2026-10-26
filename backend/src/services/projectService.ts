@@ -13,6 +13,7 @@ import {
   deleteProjectFileFromDisk,
   renameProjectFileOnDisk,
   deleteWorkspaceDir,
+  ensureWorkspaceOnDisk,
 } from "./workspaceDisk";
 import crypto from "crypto";
 
@@ -450,17 +451,85 @@ export async function emptyTrashForUser(userId: string) {
 }
 
 export async function duplicateProject(projectId: string, userId: string) {
-  const source = await getProjectById(projectId, userId);
+  const source = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: userId },
+    include: {
+      files: true,
+    },
+  });
   if (!source) return null;
 
-  const newProject = await createCloudProject(
-    userId,
-    source.template as ProjectTemplate,
-    `${source.name} (Copy)`,
-    source.description || undefined
-  );
+  const newProjectId = generateId("proj");
+  const idMap = new Map<string, string>();
+  for (const f of source.files) {
+    idMap.set(f.id, generateId(f.isFolder ? "dir" : "f"));
+  }
 
-  return newProject;
+  const mappedActiveFileId = source.activeFileId && idMap.has(source.activeFileId)
+    ? idMap.get(source.activeFileId)
+    : null;
+
+  let openIds: string[] = [];
+  try {
+    const parsed = JSON.parse(source.openFileIds);
+    if (Array.isArray(parsed)) {
+      openIds = parsed.map((id) => idMap.get(id) || id);
+    }
+  } catch {}
+
+  const newProject = await prisma.$transaction(async (tx) => {
+    const created = await tx.project.create({
+      data: {
+        id: newProjectId,
+        name: `${source.name} (Copy)`,
+        description: source.description,
+        template: source.template,
+        starred: false,
+        isTrash: false,
+        activeFileId: mappedActiveFileId,
+        openFileIds: JSON.stringify(openIds),
+        ownerId: userId,
+      },
+    });
+
+    const filesToCreate = source.files.map((f) => ({
+      id: idMap.get(f.id)!,
+      projectId: newProjectId,
+      name: f.name,
+      path: f.path,
+      content: f.content,
+      language: f.language,
+      isFolder: f.isFolder,
+      parentId: f.parentId && idMap.has(f.parentId) ? idMap.get(f.parentId)! : null,
+      version: 1,
+    }));
+
+    if (filesToCreate.length > 0) {
+      const chunkSize = 100;
+      for (let i = 0; i < filesToCreate.length; i += chunkSize) {
+        await tx.projectFile.createMany({
+          data: filesToCreate.slice(i, i + chunkSize),
+        });
+      }
+    }
+
+    return created;
+  });
+
+  // Materialize duplicated files to disk workspace
+  try {
+    const fullFiles = await prisma.projectFile.findMany({
+      where: { projectId: newProjectId },
+    });
+    await ensureWorkspaceOnDisk({
+      id: newProjectId,
+      files: fullFiles,
+    });
+  } catch (diskErr) {
+    console.warn("Failed to write duplicated project to disk:", diskErr);
+  }
+
+  return getProjectById(newProjectId, userId);
 }
 
 export async function createProjectFile(
@@ -769,7 +838,7 @@ export async function initializeFrameworkOnProject(
   if (!project) return null;
 
   if (options.type === "add-shadcn") {
-    return prisma.$transaction(async (tx) => {
+    const shadcnResult = await prisma.$transaction(async (tx) => {
       // 1. Add components.json if not present
       const hasComponentsJson = project.files.some((f) => f.path === "components.json");
       if (!hasComponentsJson) {
@@ -1094,12 +1163,24 @@ export {
         include: { files: { orderBy: [{ isFolder: "desc" }, { path: "asc" }] } },
       });
     });
+
+    if (shadcnResult) {
+      await ensureWorkspaceOnDisk({ id: shadcnResult.id, files: shadcnResult.files }).catch((err) =>
+        console.warn("Failed to write shadcn files to disk:", err)
+      );
+    }
+    return shadcnResult;
   }
 
   // Otherwise, initialize a new framework (for blank/empty workspaces)
   const { files: newFiles, activeFileId, openFileIds } = getFilesForFrameworkInit(options);
 
-  return prisma.$transaction(async (tx) => {
+  const initResult = await prisma.$transaction(async (tx) => {
+    // Clean up previous files if re-initializing workspace to prevent duplicate path records
+    await tx.projectFile.deleteMany({
+      where: { projectId: project.id },
+    });
+
     const idMap = new Map<string, string>();
     for (const f of newFiles) {
       const newId = generateId("f");
@@ -1154,4 +1235,11 @@ export {
       include: { files: { orderBy: [{ isFolder: "desc" }, { path: "asc" }] } },
     });
   });
+
+  if (initResult) {
+    await ensureWorkspaceOnDisk({ id: initResult.id, files: initResult.files }).catch((err) =>
+      console.warn("Failed to write initialized framework files to disk:", err)
+    );
+  }
+  return initResult;
 }

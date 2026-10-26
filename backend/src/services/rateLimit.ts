@@ -76,6 +76,12 @@ export function checkRateLimit(
 }
 
 export function getClientIp(req: any): string {
+  if (req.ip) {
+    return req.ip;
+  }
+  if (req.socket?.remoteAddress) {
+    return req.socket.remoteAddress;
+  }
   if (req.headers) {
     const forwarded = typeof req.headers.get === "function" 
       ? req.headers.get("x-forwarded-for") 
@@ -91,6 +97,6 @@ export function getClientIp(req: any): string {
       return Array.isArray(realIp) ? realIp[0] : realIp;
     }
   }
-  return req.ip || req.socket?.remoteAddress || "127.0.0.1";
+  return "127.0.0.1";
 }
 

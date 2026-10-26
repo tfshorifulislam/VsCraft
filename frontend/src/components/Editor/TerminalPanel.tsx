@@ -13,7 +13,6 @@ import {
   Minimize2,
   ChevronDown,
   Folder,
-  Loader2,
   CheckCircle2,
 } from "lucide-react";
 import { BottomTab, ConsoleMessage, Project, ProjectFile, ShellType, TerminalTabInfo, AvailableShell } from "@/types/editor";
@@ -123,9 +122,14 @@ function TerminalPanel({
       const { term, fitAddon } = handle;
 
       // 1. Establish authenticated WebSocket connection to persistent PTY
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const hostname = window.location.hostname || "localhost";
-      const wsUrl = `${protocol}//${hostname}:${wsPort}?projectId=${encodeURIComponent(project.id)}&sessionId=${encodeURIComponent(sessionId)}`;
+      let wsBase = process.env.NEXT_PUBLIC_WS_URL;
+      if (!wsBase) {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const hostname = window.location.hostname || "localhost";
+        wsBase = `${protocol}//${hostname}:${wsPort}`;
+      }
+      const separator = wsBase.includes("?") ? "&" : "?";
+      const wsUrl = `${wsBase}${separator}projectId=${encodeURIComponent(project.id)}&sessionId=${encodeURIComponent(sessionId)}`;
 
       let socket: WebSocket | null = null;
       try {
@@ -473,8 +477,9 @@ function TerminalPanel({
 
   // Cleanup all open xterm sessions on unmount or project switch
   useEffect(() => {
+    const currentSessions = sessionsMapRef.current;
     return () => {
-      sessionsMapRef.current.forEach((handle) => {
+      currentSessions.forEach((handle) => {
         try {
           if (handle.ws) handle.ws.close();
           if (handle.httpAbortController) handle.httpAbortController.abort();
@@ -482,7 +487,7 @@ function TerminalPanel({
           handle.containerEl.remove();
         } catch {}
       });
-      sessionsMapRef.current.clear();
+      currentSessions.clear();
     };
   }, [project.id]);
 

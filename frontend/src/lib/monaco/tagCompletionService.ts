@@ -411,11 +411,14 @@ export function setupEmmetTabExpansion(
   editor: Monaco.editor.IStandaloneCodeEditor,
   monaco: typeof Monaco
 ): Monaco.IDisposable {
-  const command = editor.addCommand(
-    monaco.KeyCode.Tab,
-    () => {
-      const model = editor.getModel();
-      const position = editor.getPosition();
+  return editor.addAction({
+    id: "emmet.expandTab",
+    label: "Expand Emmet Abbreviation",
+    keybindings: [monaco.KeyCode.Tab],
+    precondition: "!suggestWidgetVisible",
+    run: (ed) => {
+      const model = ed.getModel();
+      const position = ed.getPosition();
       if (!model || !position) return;
 
       const lineContent = model.getLineContent(position.lineNumber);
@@ -425,7 +428,7 @@ export function setupEmmetTabExpansion(
       if (extracted) {
         // Expand using Monaco's built-in snippet controller
         const snippetController = (
-          editor as unknown as {
+          ed as unknown as {
             getContribution: (id: string) => {
               insert?: (s: string, opts?: { range?: Monaco.Range; overwriteBefore?: number }) => void;
             };
@@ -448,7 +451,7 @@ export function setupEmmetTabExpansion(
         const cleanText = extracted.expanded
           .replace(/\$\{\d+(?::([^}]+))?\}/g, "$1")
           .replace(/\$\d+/g, "");
-        editor.executeEdits("emmet-expand", [{ range, text: cleanText }]);
+        ed.executeEdits("emmet-expand", [{ range, text: cleanText }]);
         return;
       }
 
@@ -456,16 +459,9 @@ export function setupEmmetTabExpansion(
       const tabSize = model.getOptions().tabSize || 2;
       const insertSpaces = model.getOptions().insertSpaces;
       const indentStr = insertSpaces ? " ".repeat(tabSize) : "\t";
-      editor.trigger("keyboard", "type", { text: indentStr });
+      ed.trigger("keyboard", "type", { text: indentStr });
     },
-    "!suggestWidgetVisible"
-  );
-
-  return {
-    dispose: () => {
-      // Disposed when editor unmounts
-    },
-  };
+  });
 }
 
 /**

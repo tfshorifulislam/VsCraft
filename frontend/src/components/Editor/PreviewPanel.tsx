@@ -397,7 +397,7 @@ export default function PreviewPanel({
               key={`${refreshKey}-${refreshTrigger}-${serverPort}`}
               src={activeIframeSrc}
               title="Live Development Server Preview"
-              sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
+              sandbox="allow-scripts allow-modals allow-forms allow-popups"
               className="w-full h-full border-0 bg-white"
             />
           ) : previewMode === "devserver" && serverStatus === "starting" ? (
@@ -485,7 +485,7 @@ export default function PreviewPanel({
               key={`compiler-${refreshKey}-${refreshTrigger}`}
               src={`/api/projects/${encodeURIComponent(project.id)}/preview?t=${refreshKey}_${refreshTrigger}`}
               title="Fast Compiler Live Preview"
-              sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
+              sandbox="allow-scripts allow-modals allow-forms allow-popups"
               className="w-full h-full border-0 bg-white"
             />
           )}

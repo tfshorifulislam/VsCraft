@@ -510,14 +510,39 @@ export const cloudApi = {
       files: File[],
       folderPath?: string
     ): Promise<ProjectFile[]> {
-      const formData = new FormData();
-      if (folderPath) formData.append("folder", folderPath);
-      for (const file of files) {
-        formData.append("files", file);
-      }
+      const payloadFiles = await Promise.all(
+        files.map(async (file) => {
+          const ext = file.name.split(".").pop()?.toLowerCase() || "";
+          const isBinary = ["png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "avif", "pdf", "wasm"].includes(ext);
+
+          let content = "";
+          if (isBinary && ext !== "svg") {
+            content = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+              reader.readAsDataURL(file);
+            });
+          } else {
+            content = await file.text();
+          }
+
+          const cleanFolder = folderPath ? folderPath.replace(/^\/+/, "").replace(/\/+$/, "") : "";
+          const relPath = cleanFolder ? `${cleanFolder}/${file.name}` : file.name;
+
+          return {
+            name: file.name,
+            path: relPath,
+            content,
+          };
+        })
+      );
+
       const res = await fetch(`/api/projects/${projectId}/upload`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ files: payloadFiles }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to upload files.");

@@ -93,18 +93,24 @@ export async function ensureWorkspaceOnDisk(project: {
 }): Promise<string> {
   const workspaceDir = getWorkspaceDir(project.id);
   await fsp.mkdir(workspaceDir, { recursive: true });
-  const loadedIds = project.contentLazy
-    ? new Set(project.loadedFileIds || [])
-    : null;
 
-  for (const file of project.files) {
+  // If the project passed is lazy-loaded, fetch complete files from DB so disk has full project
+  let filesToWrite = project.files;
+  if (project.contentLazy) {
+    const fullFiles = await prisma.projectFile.findMany({
+      where: { projectId: project.id },
+      select: { id: true, path: true, isFolder: true, content: true },
+    });
+    if (fullFiles.length > 0) {
+      filesToWrite = fullFiles;
+    }
+  }
+
+  for (const file of filesToWrite) {
     if (file.isFolder) {
       const folderPath = resolveSafePath(project.id, file.path);
       await fsp.mkdir(folderPath, { recursive: true });
     } else {
-      if (loadedIds && (!file.id || !loadedIds.has(file.id))) {
-        continue;
-      }
       const filePath = resolveSafePath(project.id, file.path);
       const parentDir = path.dirname(filePath);
       await fsp.mkdir(parentDir, { recursive: true });
@@ -381,18 +387,21 @@ export async function syncDiskToDatabase(projectId: string): Promise<ProjectFile
   }
 
   // 3b. Delete files and folders from DB that were removed from disk
-  const diskPathSet = new Set(diskFiles.map((d) => d.path));
-  // Delete files first, then folders (reverse path length order)
-  const toDelete = dbFiles
-    .filter((f) => !diskPathSet.has(f.path))
-    .sort((a, b) => b.path.length - a.path.length);
+  // Safety guard: only delete if diskFiles were found (prevent wiping DB on readdir error/empty)
+  if (diskFiles.length > 0) {
+    const diskPathSet = new Set(diskFiles.map((d) => d.path));
+    // Delete files first, then folders (reverse path length order)
+    const toDelete = dbFiles
+      .filter((f) => !diskPathSet.has(f.path) && !IGNORED_DISK_NAMES.has(f.name))
+      .sort((a, b) => b.path.length - a.path.length);
 
-  for (const del of toDelete) {
-    try {
-      await prisma.projectFile.delete({ where: { id: del.id } });
-      dbFileMap.delete(del.path);
-    } catch {
-      // Ignore if already cascadingly deleted
+    for (const del of toDelete) {
+      try {
+        await prisma.projectFile.delete({ where: { id: del.id } });
+        dbFileMap.delete(del.path);
+      } catch {
+        // Ignore if already cascadingly deleted
+      }
     }
   }
 

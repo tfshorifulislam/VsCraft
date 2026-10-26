@@ -34,8 +34,8 @@ export default function GitPanel({
   const [stagedIds, setStagedIds] = useState<Set<string>>(new Set());
   const [commits, setCommits] = useState<GitCommitRecord[]>(INITIAL_COMMITS);
 
-  // Derive changes based on unsaved files or all files if newly created
-  const modifiedFiles = project.files.filter((f) => !f.isFolder && (unsavedFiles[f.id] || true));
+  // Derive changes based on actual unsaved files
+  const modifiedFiles = project.files.filter((f) => !f.isFolder && Boolean(unsavedFiles[f.id]));
 
   const stagedFiles = modifiedFiles.filter((f) => stagedIds.has(f.id));
   const unstagedFiles = modifiedFiles.filter((f) => !stagedIds.has(f.id));

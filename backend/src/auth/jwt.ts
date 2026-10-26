@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
+import { config } from "../config";
 
-const JWT_SECRET = process.env.JWT_SECRET || "code-editor-ultra-secure-jwt-secret-key-32-chars-min-prod-key-99";
-const encodedSecret = new TextEncoder().encode(JWT_SECRET);
+const encodedSecret = new TextEncoder().encode(config.jwtSecret);
 
 export interface SessionPayload {
   userId: string;

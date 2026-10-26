@@ -8,6 +8,9 @@ import {
   sendPtySignal,
   PtySession,
 } from "./terminalPtyManager";
+import { verifySessionToken } from "../auth/jwt";
+import { SESSION_COOKIE_NAME } from "../auth/session";
+import prisma from "../db/prisma";
 
 let wssInstance: WebSocketServer | null = null;
 let currentBoundPort: number = 3005;
@@ -42,14 +45,53 @@ export function getOrCreateTerminalWSServer(): WebSocketServer {
         }
       });
 
-      server.on("connection", (ws: WebSocket, req) => {
+      server.on("connection", async (ws: WebSocket, req) => {
         const url = new URL(req.url || "", "http://localhost");
         const projectId = url.searchParams.get("projectId") || "";
         let sessionId = url.searchParams.get("sessionId") || "";
 
         if (!projectId) {
           ws.send(JSON.stringify({ type: "error", data: "Missing projectId parameter.\r\n" }));
-          ws.close();
+          ws.close(4000, "Missing projectId");
+          return;
+        }
+
+        // Authenticate request: extract token from query param, cookie, or authorization header
+        const cookieHeader = req.headers.cookie || "";
+        const cookies: Record<string, string> = {};
+        cookieHeader.split(";").forEach((c) => {
+          const [k, ...v] = c.split("=");
+          if (k) cookies[k.trim()] = decodeURIComponent(v.join("=").trim());
+        });
+
+        const authHeader = req.headers.authorization;
+        const authBearer = authHeader && authHeader.startsWith("Bearer ")
+          ? authHeader.slice(7).trim()
+          : null;
+
+        const token = url.searchParams.get("token") || cookies[SESSION_COOKIE_NAME] || authBearer;
+        if (!token) {
+          ws.send(JSON.stringify({ type: "error", data: "Unauthorized: Missing authentication credentials.\r\n" }));
+          ws.close(4001, "Unauthorized");
+          return;
+        }
+
+        const payload = await verifySessionToken(token);
+        if (!payload) {
+          ws.send(JSON.stringify({ type: "error", data: "Unauthorized: Invalid or expired session token.\r\n" }));
+          ws.close(4001, "Unauthorized");
+          return;
+        }
+
+        // Verify project ownership
+        const project = await prisma.project.findFirst({
+          where: { id: projectId, ownerId: payload.userId },
+          select: { id: true, name: true },
+        });
+
+        if (!project) {
+          ws.send(JSON.stringify({ type: "error", data: "Forbidden: Project not found or unauthorized access.\r\n" }));
+          ws.close(4003, "Forbidden");
           return;
         }
 
@@ -59,14 +101,14 @@ export function getOrCreateTerminalWSServer(): WebSocketServer {
           : undefined;
 
         if (!session) {
-          const sessions = listPtySessions(projectId);
+          const sessions = listPtySessions(projectId, project.name);
           session = sessions.length > 0
             ? getPtySession(projectId, sessions[0].id)
-            : createPtySession(projectId);
+            : createPtySession(projectId, undefined, undefined, 80, 24, project.name);
         }
 
         if (!session) {
-          session = createPtySession(projectId);
+          session = createPtySession(projectId, undefined, undefined, 80, 24, project.name);
         }
 
         sessionId = session.id;

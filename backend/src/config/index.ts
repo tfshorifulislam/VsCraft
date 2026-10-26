@@ -3,9 +3,14 @@ import path from "path";
 
 dotenv.config();
 
+const nodeEnv = process.env.NODE_ENV || "development";
+if (nodeEnv === "production" && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
+  throw new Error("Security Error: JWT_SECRET environment variable (minimum 32 characters) is required in production mode.");
+}
+
 export const config = {
   port: parseInt(process.env.PORT || "4000", 10),
-  nodeEnv: process.env.NODE_ENV || "development",
+  nodeEnv,
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   allowedOrigins: [
     process.env.FRONTEND_URL || "http://localhost:3000",

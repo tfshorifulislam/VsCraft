@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { checkRateLimit, getClientIp } from "../services/rateLimit";
+import { requireAuth } from "../middleware/auth";
 
 const router = Router();
 
@@ -323,7 +324,7 @@ function handleUnconfiguredKey(
 }
 
 // POST /api/ai
-router.post("/", async (req: Request, res: Response) => {
+router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const clientIp = getClientIp(req);
     const rateCheck = checkRateLimit(clientIp, {

@@ -17,19 +17,30 @@ import workspacesRouter from "./routes/workspaces";
 import { getOrCreateTerminalWSServer } from "./services/terminalWebSocketServer";
 
 const app = express();
+app.set("trust proxy", 1);
 
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, server-to-server)
       if (!origin) return callback(null, true);
-      if (
-        config.allowedOrigins.includes(origin) ||
-        config.nodeEnv !== "production" ||
-        origin.endsWith(".vercel.app")
-      ) {
+
+      // In non-production, allow localhost development ports
+      if (config.nodeEnv !== "production") {
+        if (
+          config.allowedOrigins.includes(origin) ||
+          /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+        ) {
+          return callback(null, true);
+        }
+      }
+
+      // In production, strictly allow configured origins
+      if (config.allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(null, true);
+
+      return callback(new Error(`CORS policy blocked access from origin: ${origin}`), false);
     },
     credentials: true,
   })

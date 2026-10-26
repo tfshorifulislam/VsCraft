@@ -129,7 +129,8 @@ export const authController = {
 
   logout(_req: Request, res: Response) {
     res.clearCookie(SESSION_COOKIE_NAME, {
-      path: "/",
+      ...SESSION_COOKIE_OPTIONS,
+      maxAge: 0,
     });
     return res.json({
       success: true,

@@ -30,6 +30,7 @@ import {
   getOrCreateTerminalWSServer,
   getTerminalWSPort,
 } from "../services/terminalWebSocketServer";
+import { getSanitizedWorkspaceEnv } from "../services/workspaceEnv";
 import { ShellType } from "../types/editor";
 import { exec } from "child_process";
 import fsp from "fs/promises";
@@ -409,11 +410,7 @@ router.post("/:id/terminal", requireAuth, async (req: AuthenticatedRequest, res:
     {
       cwd: effectiveDir,
       shell: isWindows ? "powershell.exe" : "/bin/sh",
-      env: {
-        ...process.env,
-        PROJECT_ID: projectId,
-        NODE_ENV: "development",
-      },
+      env: getSanitizedWorkspaceEnv(projectId, effectiveDir),
       timeout: 25000,
       maxBuffer: 1024 * 1024 * 5,
     },

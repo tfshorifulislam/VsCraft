@@ -15,6 +15,7 @@ import {
   ensureWorkspaceOnDisk,
   syncDiskToDatabase,
   getWorkspaceDir,
+  writeProjectFileToDisk,
 } from "../services/workspaceDisk";
 import {
   detectProjectsInWorkspace,
@@ -1020,18 +1021,27 @@ router.get("/:id/raw", requireAuth, async (req: AuthenticatedRequest, res: Respo
   }
 
   const userId = req.user!.id;
-  const project = await getProjectById(projectId, userId);
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: userId },
+    select: { id: true },
+  });
   if (!project) {
     return res.status(404).json({ error: "Project not found or unauthorized." });
   }
 
   const normalizedPath = rawPath ? rawPath.replace(/^\/+/, "").replace(/\\/g, "/") : "";
 
-  const file = project.files.find(
-    (f) =>
-      (!f.isFolder && fileId && f.id === fileId) ||
-      (!f.isFolder && normalizedPath && f.path.replace(/^\/+/, "") === normalizedPath)
-  );
+  const file = await prisma.projectFile.findFirst({
+    where: {
+      projectId,
+      isFolder: false,
+      OR: [
+        ...(fileId ? [{ id: fileId }] : []),
+        ...(normalizedPath ? [{ path: normalizedPath }] : []),
+      ],
+    },
+    select: { id: true, name: true, path: true, content: true },
+  });
 
   if (!file) {
     return res.status(404).json({ error: `File not found: ${rawPath || fileId}` });
@@ -1261,6 +1271,13 @@ router.post("/:id/upload", requireAuth, async (req: AuthenticatedRequest, res: R
         }
       }
     });
+
+    // Materialize uploaded files to disk workspace
+    for (const f of createdFiles) {
+      await writeProjectFileToDisk(projectId, f.path, f.content, f.isFolder).catch((err) =>
+        console.error("Failed to write uploaded file to disk:", err)
+      );
+    }
 
     return res.status(201).json({
       success: true,

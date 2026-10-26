@@ -3,7 +3,7 @@ import http from "http";
 import net from "net";
 import path from "path";
 import fsp from "fs/promises";
-import { getWorkspaceDir } from "./workspaceDisk";
+import { getWorkspaceDir, resolveSafePath } from "./workspaceDisk";
 import { getSanitizedWorkspaceEnv } from "./workspaceEnv";
 
 export type ProjectFramework = "nextjs" | "vite" | "node" | "static" | "python" | "unknown";
@@ -187,7 +187,13 @@ export async function startDevServer(projectId: string): Promise<DevServerInstan
         try {
           const reqPath = req.url?.split("?")[0] || "/";
           const relPath = reqPath === "/" ? "index.html" : reqPath.replace(/^\//, "");
-          const filePath = path.join(workspaceDir, relPath);
+          let filePath: string;
+          try {
+            filePath = resolveSafePath(projectId, relPath);
+          } catch {
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            return res.end("Forbidden: Path traversal blocked");
+          }
 
           const stat = await fsp.stat(filePath);
           if (stat.isFile()) {
