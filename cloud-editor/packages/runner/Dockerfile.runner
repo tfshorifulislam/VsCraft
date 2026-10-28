@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:20-alpine
+
+LABEL org.opencontainers.image.title="cloud-editor-runner-sandbox" \
+      org.opencontainers.image.description="Ephemeral sandbox image for untrusted user code"
+
+RUN apk add --no-cache \
+      bash \
+      ca-certificates \
+      curl \
+      dumb-init \
+      git \
+      ripgrep \
+    && addgroup -S runner \
+    && adduser -S -G runner -h /home/runner -s /bin/bash runner \
+    && mkdir -p /workspace \
+    && chown -R runner:runner /workspace /home/runner
+
+ENV HOME="/home/runner" \
+    NODE_ENV="production"
+
+WORKDIR /workspace
+USER runner
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["bash", "-l"]

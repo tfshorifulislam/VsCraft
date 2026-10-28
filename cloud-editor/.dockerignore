@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+**/.DS_Store
+**/coverage
+**/tsconfig.tsbuildinfo
+.git
+.gitignore
+docker-compose.yml
+docker-compose.prod.yml
+README.md
+infra
