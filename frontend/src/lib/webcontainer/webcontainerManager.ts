@@ -93,6 +93,9 @@ class WebContainerManager {
 
         return instance;
       })();
+      this.instancePromise.catch(() => {
+        this.instancePromise = null;
+      });
     }
 
     return this.instancePromise;
@@ -157,6 +160,30 @@ class WebContainerManager {
 
   public isProjectMounted(projectId: string): boolean {
     return this.isMounted && this.currentProjectId === projectId;
+  }
+
+  public async hasWorkspaceFiles(): Promise<boolean> {
+    if (!this.instancePromise) return false;
+    try {
+      const container = await this.getInstance();
+      const entries = await container.fs.readdir(".");
+      const ignored = new Set([".DS_Store", "Thumbs.db", ".npm", ".cache", ".node_repl_history"]);
+      return entries.some((entry) => !ignored.has(entry));
+    } catch {
+      return false;
+    }
+  }
+
+  public async resetWorkspace(): Promise<void> {
+    const container = await this.getInstance();
+    const entries = await container.fs.readdir(".");
+    await Promise.all(
+      entries.map((entry) =>
+        container.fs.rm(entry, { recursive: true, force: true }).catch(() => {})
+      )
+    );
+    this.currentProjectId = null;
+    this.isMounted = false;
   }
 
   /**

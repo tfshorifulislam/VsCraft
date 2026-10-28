@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback, type ReactNode, type 
 import ProjectsSidebar, { DashboardViewCategory } from "./ProjectsSidebar";
 import ProjectsHeader from "./ProjectsHeader";
 import ProjectCard from "./ProjectCard";
-import NewProjectDialog from "./NewProjectDialog";
+import NewProjectTerminalModal from "./NewProjectTerminalModal";
 import ImportProjectDialog from "./ImportProjectDialog";
 import FolderImportOverlay from "./FolderImportOverlay";
 import ProjectEmptyState from "./ProjectEmptyState";
@@ -52,7 +52,7 @@ export default function ProjectsDashboard() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [filterType, setFilterType] = useState("all");
   const [sortBy, setSortBy] = useState<"modified" | "name" | "created">("modified");
-  const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
+  const [isTerminalModalOpen, setIsTerminalModalOpen] = useState(false);
   const [isImportProjectOpen, setIsImportProjectOpen] = useState(false);
   const [isImportingProject, setIsImportingProject] = useState(false);
   const [folderImportProgress, setFolderImportProgress] =
@@ -281,14 +281,8 @@ export default function ProjectsDashboard() {
     }
   };
 
-  const handleOpenNewTerminal = async () => {
-    try {
-      const session = await cloudApi.terminal.startSession("New Terminal Project");
-      router.push(`/editor/${session.projectId}?init=terminal`);
-    } catch (err) {
-      console.error("Open terminal error:", err);
-      alert("Failed to open real terminal.");
-    }
+  const handleTerminalModalClose = () => {
+    setIsTerminalModalOpen(false);
   };
 
   const handleCreateFromTemplate = async (template: ProjectTemplate) => {
@@ -401,7 +395,7 @@ export default function ProjectsDashboard() {
       <ProjectsSidebar
         currentCategory={currentCategory}
         onSelectCategory={setCurrentCategory}
-        onOpenNewProject={handleOpenNewTerminal}
+        onOpenNewProject={() => setIsTerminalModalOpen(true)}
         onCreateEmptyProject={handleCreateEmptyProject}
         isCreatingEmpty={isCreatingEmpty}
         counts={counts}
@@ -420,7 +414,7 @@ export default function ProjectsDashboard() {
           onFilterChange={setFilterType}
           sortBy={sortBy}
           onSortChange={setSortBy}
-          onOpenNewProject={handleOpenNewTerminal}
+          onOpenNewProject={() => setIsTerminalModalOpen(true)}
           onCreateEmptyProject={handleCreateEmptyProject}
           isCreatingEmpty={isCreatingEmpty}
           onOpenImportProject={handleImportFolder}
@@ -532,7 +526,7 @@ export default function ProjectsDashboard() {
             <ProjectEmptyState
               category={currentCategory}
               isSearchActive={Boolean(searchQuery.trim())}
-              onOpenNewProject={handleOpenNewTerminal}
+              onOpenNewProject={() => setIsTerminalModalOpen(true)}
               onCreateEmptyProject={handleCreateEmptyProject}
               isCreatingEmpty={isCreatingEmpty}
               onClearSearch={() => setSearchQuery("")}
@@ -583,14 +577,9 @@ export default function ProjectsDashboard() {
         </div>
       </main>
 
-      {/* New Project Modal Picker */}
-      <NewProjectDialog
-        isOpen={isNewProjectOpen}
-        onClose={() => setIsNewProjectOpen(false)}
-        onCreated={(id) => {
-          requestProjectReload();
-          router.push(`/editor/${id}?init=terminal`);
-        }}
+      <NewProjectTerminalModal
+        isOpen={isTerminalModalOpen}
+        onClose={handleTerminalModalClose}
       />
 
       {/* Import ZIP Archive Modal */}
