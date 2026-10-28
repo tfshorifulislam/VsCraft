@@ -10,6 +10,26 @@ export const memberRoleSchema = z.enum(["owner", "editor", "viewer"]);
 
 export const inviteableRoleSchema = z.enum(["editor", "viewer"]);
 
+export const registerSchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    password: z
+      .string()
+      .min(8)
+      .max(200)
+      .regex(/[A-Za-z]/, "Password must contain at least one letter")
+      .regex(/[0-9]/, "Password must contain at least one number"),
+    displayName: z.string().trim().min(1).max(60)
+  })
+  .strict();
+
+export const loginSchema = z
+  .object({
+    email: z.string().trim().email().max(320),
+    password: z.string().min(1).max(200)
+  })
+  .strict();
+
 export const userSchema = z
   .object({
     id: uuidSchema,
@@ -169,6 +189,8 @@ export const paginationSchema = z
   })
   .strict();
 
+export type RegisterInput = z.infer<typeof registerSchema>;
+export type LoginInput = z.infer<typeof loginSchema>;
 export type UserDto = z.infer<typeof userSchema>;
 export type ProjectDto = z.infer<typeof projectSchema>;
 export type FileDto = z.infer<typeof fileSchema>;

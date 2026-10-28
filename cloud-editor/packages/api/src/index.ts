@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { app } from "./app.js";
 import { env } from "./config/env.js";
+import { closeRedis } from "./config/redis.js";
 import { pool } from "./db/pool.js";
 import { logger } from "./utils/logger.js";
 
@@ -36,14 +37,16 @@ const shutdown = (reason: string): void => {
       process.exitCode = 1;
     }
 
-    void pool
-      .end()
-      .then(() => {
-        logger.info("PostgreSQL pool closed");
-      })
-      .catch((poolError: unknown) => {
-        logger.error({ err: poolError }, "Failed to close PostgreSQL pool");
-        process.exitCode = 1;
+    void Promise.allSettled([pool.end(), closeRedis()])
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === "rejected") {
+            logger.error({ err: result.reason }, "Failed to close shutdown resource");
+            process.exitCode = 1;
+          }
+        }
+
+        logger.info("PostgreSQL pool and Redis client closed");
       })
       .finally(() => {
         clearTimeout(forceShutdownTimer);

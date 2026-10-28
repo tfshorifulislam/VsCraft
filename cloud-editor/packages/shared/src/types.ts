@@ -84,6 +84,18 @@ export interface ProjectWithRole extends Project {
   role: ProjectRole;
 }
 
+export interface AuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+  avatarUrl: string | null;
+}
+
+export interface AuthResponse {
+  user: AuthUser;
+  accessToken: string;
+}
+
 /**
  * @deprecated Use FileNode. Kept for backwards compatibility with earlier
  * foundation code that modelled files with a storage key and content type.

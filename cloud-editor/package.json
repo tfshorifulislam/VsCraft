@@ -18,6 +18,7 @@
     "start:runner": "pnpm --filter @cloud-editor/runner start",
     "typecheck": "pnpm --filter @cloud-editor/shared build && pnpm -r typecheck",
     "db:migrate": "pnpm --filter @cloud-editor/api db:migrate",
-    "db:migrate:prod": "pnpm --filter @cloud-editor/api db:migrate:prod"
+    "db:migrate:prod": "pnpm --filter @cloud-editor/api db:migrate:prod",
+    "test": "pnpm --filter @cloud-editor/api test"
   }
 }

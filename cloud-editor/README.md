@@ -213,6 +213,112 @@ removes metadata through foreign keys, but the Prompt 4 file service must delete
 the corresponding S3/R2 objects at the application level (database triggers
 cannot participate in object-storage cleanup).
 
+## Authentication and authorization
+
+### Token model
+
+- **Access token**: short-lived HS256 JWT signed with `JWT_ACCESS_SECRET`.
+  TTL comes from `JWT_ACCESS_TTL` (default `15m`). Claims include `sub`,
+  `email`, `iat`, `exp`, `jti`, `iss=cloud-editor`, and `aud=access`. It is
+  stateless and verified locally by every API instance. Send it as
+  `Authorization: Bearer <token>`.
+- **Refresh token**: 32 random bytes encoded as base64url. The raw value is
+  returned only in the httpOnly cookie. PostgreSQL stores only its SHA-256 hash
+  in `refresh_tokens.token_hash`; the raw token is never placed in a JSON body
+  or logs.
+- **Rotation**: `POST /api/auth/refresh` revokes the old row and inserts a new
+  refresh token. If an already-revoked token is presented, the API treats it as
+  reuse, revokes **all** active refresh tokens for that user, and returns
+  `401 refresh_reuse`.
+- **Logout** revokes the current refresh token and clears the cookie.
+- Clients must keep the access token in memory only. Never store access or
+  refresh tokens in `localStorage` or `sessionStorage`.
+
+### Cookie attributes
+
+The refresh cookie is named `refresh_token` and uses:
+
+```text
+httpOnly: true
+secure:   NODE_ENV === "production"
+sameSite: lax
+path:     /api/auth
+maxAge:   JWT_REFRESH_TTL (default 7d)
+```
+
+The cookie is scoped to `/api/auth`, so it is not sent to project, file, or
+runner routes. CORS must use an exact allowed origin plus `credentials: true`.
+
+### Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | Create a user, return access token, set refresh cookie |
+| `POST` | `/api/auth/login` | Verify credentials, return access token, set refresh cookie |
+| `POST` | `/api/auth/refresh` | Rotate refresh cookie, return new access token |
+| `POST` | `/api/auth/logout` | Revoke refresh token and clear cookie |
+| `GET` | `/api/auth/me` | Return the authenticated user (requires Bearer token) |
+
+Validation errors return `400` with
+`error.details: [{ field, message }]`. Login failures use the generic
+`invalid_credentials` code and still perform a dummy Argon2 verification to
+reduce timing leaks.
+
+### Rate limits
+
+Rate limiting is shared across API replicas via Redis (`REDIS_URL`):
+
+- login and register: 10 attempts per 15 minutes per IP + email;
+- refresh: 30 requests per 15 minutes per IP.
+
+Exceeded limits return `429` with a `Retry-After` header.
+
+### Environment and RBAC
+
+Authentication uses `DATABASE_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`,
+`JWT_REFRESH_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL`, and `NODE_ENV`
+(cookie `secure` flag). `CORS_ORIGIN` must include the frontend origin.
+
+`requireAuth` and `optionalAuth` populate `req.user`. Project routes use
+`requireProjectRole(...)`, `requireOwner`, `requireEditor`, or `requireViewer`.
+Roles are read from `project_members`; missing membership and insufficient role
+both return `403` without revealing whether the project exists.
+
+### curl examples
+
+```bash
+# Login. Save the refresh cookie in a jar; read accessToken from the JSON body.
+curl -s -c cookies.txt   -H 'Content-Type: application/json'   -d '{"email":"dev@example.com","password":"password123"}'   http://localhost:4000/api/auth/login
+
+# Register a new user.
+curl -s -c cookies.txt   -H 'Content-Type: application/json'   -d '{"email":"new@example.com","password":"Password123","displayName":"New User"}'   http://localhost:4000/api/auth/register
+
+# Use the access token from the login/register response.
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN"   http://localhost:4000/api/auth/me
+
+# Rotate the refresh token. Always send and update the cookie jar.
+curl -i -b cookies.txt -c cookies.txt -X POST   http://localhost:4000/api/auth/refresh
+
+# Logout and clear the cookie.
+curl -i -b cookies.txt -c cookies.txt -X POST   http://localhost:4000/api/auth/logout
+```
+
+### Tests
+
+```bash
+pnpm test
+```
+
+Unit tests cover Argon2id hashing and JWT signing/expiry. Refresh rotation and
+RBAC integration tests run only when `TEST_DATABASE_URL` is set, and expect the
+migrations to have been applied to that test database:
+
+```bash
+TEST_DATABASE_URL='postgresql://cloud_editor:password@localhost:5432/cloud_editor_test'   pnpm test
+```
+
+Email verification and password reset are intentionally out of scope for v1.
+
 ## Object storage model
 
 The API will issue S3 operations with the configured credentials. A recommended

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import cookieParser from "cookie-parser";
 import cors from "cors";
 import express, {
   type ErrorRequestHandler,
@@ -11,12 +12,9 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { API_PREFIX, HEALTH_PATH } from "@cloud-editor/shared";
 import { env } from "./config/env.js";
+import { authRouter } from "./routes/auth.routes.js";
+import { AppError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
-
-interface HttpError extends Error {
-  status?: number;
-  statusCode?: number;
-}
 
 const allowedOrigins = new Set(
   env.CORS_ORIGIN.split(",")
@@ -81,6 +79,7 @@ app.use(
 );
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+app.use(cookieParser());
 
 app.get(HEALTH_PATH, (_req, res) => {
   res.status(200).json({
@@ -97,6 +96,8 @@ if (routes.length > 0) {
   app.use(API_PREFIX, ...routes);
 }
 
+app.use("/api/auth", authRouter);
+
 app.use((req, res) => {
   res.status(404).json({
     error: {
@@ -107,37 +108,40 @@ app.use((req, res) => {
   });
 });
 
-const errorHandler: ErrorRequestHandler = (error: unknown, req, res, next) => {
+const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   if (res.headersSent) {
     next(error);
     return;
   }
 
-  const httpError = error instanceof Error ? (error as HttpError) : undefined;
-  const candidateStatus = httpError?.status ?? httpError?.statusCode;
-  const status =
-    typeof candidateStatus === "number" && candidateStatus >= 400 && candidateStatus <= 599
-      ? candidateStatus
-      : 500;
   const requestIdValue: unknown = res.locals.requestId;
   const requestLogger = req.log ?? logger;
 
-  if (status >= 500) {
-    requestLogger.error({ err: error, requestId: requestIdValue }, "Request failed");
-  } else {
-    requestLogger.warn({ err: error, requestId: requestIdValue }, "Request rejected");
+  if (error instanceof AppError) {
+    if (error.status >= 500) {
+      requestLogger.error({ err: error, requestId: requestIdValue }, "Request failed");
+    } else {
+      requestLogger.warn({ err: error, requestId: requestIdValue }, "Request rejected");
+    }
+
+    const payload: { code: string; message: string; details?: unknown } = {
+      code: error.code,
+      message: error.message
+    };
+
+    if (error.details !== undefined) {
+      payload.details = error.details;
+    }
+
+    res.status(error.status).json({ error: payload });
+    return;
   }
 
-  const message =
-    status >= 500 && env.NODE_ENV === "production"
-      ? "Internal server error"
-      : httpError?.message || "Internal server error";
-
-  res.status(status).json({
+  requestLogger.error({ err: error, requestId: requestIdValue }, "Unhandled request error");
+  res.status(500).json({
     error: {
-      code: status >= 500 ? "INTERNAL_ERROR" : "REQUEST_ERROR",
-      message,
-      requestId: typeof requestIdValue === "string" ? requestIdValue : null
+      code: "INTERNAL_ERROR",
+      message: "Internal server error"
     }
   });
 };
