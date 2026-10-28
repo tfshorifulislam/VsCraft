@@ -41,6 +41,7 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
+  MAX_FILE_SIZE_MB: z.coerce.number().int().min(1).max(100).default(2),
   CORS_ORIGIN: z.string().trim().min(1).default("http://localhost:3000")
 });
 

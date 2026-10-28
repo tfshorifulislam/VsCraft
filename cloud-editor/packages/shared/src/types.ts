@@ -50,6 +50,8 @@ export interface FileNode {
   updatedAt: string;
 }
 
+export type FileTreeNode = FileNode & { children?: FileTreeNode[] };
+
 export interface ProjectSnapshot {
   id: string;
   projectId: string;
@@ -82,6 +84,10 @@ export interface RunnerSession {
 
 export interface ProjectWithRole extends Project {
   role: ProjectRole;
+}
+
+export interface ProjectListItem extends ProjectWithRole {
+  memberCount: number;
 }
 
 export interface AuthUser {
@@ -130,4 +136,12 @@ export interface Member {
 export interface Page<T> {
   items: T[];
   nextCursor: string | null;
+}
+
+export interface ApiError {
+  error: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
 }

@@ -167,11 +167,28 @@ export const createFileSchema = z
   })
   .strict();
 
+export const writeFileSchema = z
+  .object({
+    contentBase64: z.string()
+  })
+  .strict();
+
 export const renameFileSchema = z
   .object({
     newPath: relativeFilePathSchema
   })
   .strict();
+
+export const hydrateSchema = z
+  .object({
+    fileIds: z.array(uuidSchema).min(1).max(500)
+  })
+  .strict();
+
+export const fileIdParamsSchema = z.object({
+  projectId: uuidSchema,
+  fileId: uuidSchema
+});
 
 export const updateFileSchema = z
   .object({
@@ -201,6 +218,8 @@ export type InviteMemberInput = z.infer<typeof inviteMemberSchema>;
 export type AddMemberInput = z.infer<typeof addMemberSchema>;
 export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>;
 export type CreateFileInput = z.infer<typeof createFileSchema>;
+export type WriteFileInput = z.infer<typeof writeFileSchema>;
 export type RenameFileInput = z.infer<typeof renameFileSchema>;
+export type HydrateInput = z.infer<typeof hydrateSchema>;
 export type UpdateFileInput = z.infer<typeof updateFileSchema>;
 export type PaginationInput = z.infer<typeof paginationSchema>;

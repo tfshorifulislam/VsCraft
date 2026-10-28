@@ -129,7 +129,7 @@ Key groups in `.env.example`:
 - **Auth**: `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_ACCESS_TTL`,
   `JWT_REFRESH_TTL`
 - **S3/R2**: `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY`,
-  `S3_SECRET_KEY`, `S3_FORCE_PATH_STYLE`
+  `S3_SECRET_KEY`, `S3_FORCE_PATH_STYLE`, `MAX_FILE_SIZE_MB`
 - **Runner limits**: `RUNNER_MAX_TIMEOUT_MS`, `RUNNER_MAX_MEMORY_MB`,
   `RUNNER_MAX_CPU`
 - **CORS**: `CORS_ORIGIN` (comma-separated origins are accepted)
@@ -278,6 +278,74 @@ Exceeded limits return `429` with a `Retry-After` header.
 Authentication uses `DATABASE_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`,
 `JWT_REFRESH_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL`, and `NODE_ENV`
 (cookie `secure` flag). `CORS_ORIGIN` must include the frontend origin.
+
+## Projects and files
+
+Project routes live under `/api/projects` and require a Bearer access token.
+`owner` can manage settings and members, `editor` can change files, and `viewer`
+can read files and lists. The response body is wrapped as `{ project }`,
+`{ projects }`, `{ file }`, `{ files }`, or `{ member }` as appropriate.
+
+| Method | Path | Role | Description |
+| --- | --- | --- | --- |
+| `GET` | `/api/projects` | authenticated | List projects the user belongs to |
+| `POST` | `/api/projects` | authenticated | Create a project and owner membership |
+| `GET` | `/api/projects/:projectId` | viewer | Get one project |
+| `PATCH` | `/api/projects/:projectId` | editor | Update name, description, language, visibility |
+| `DELETE` | `/api/projects/:projectId` | owner | Delete metadata and project S3 objects |
+| `GET` | `/api/projects/:projectId/members` | viewer | List members |
+| `POST` | `/api/projects/:projectId/members` | owner | Add an existing user by email |
+| `PATCH` | `/api/projects/:projectId/members/:userId` | owner | Change editor/viewer role |
+| `DELETE` | `/api/projects/:projectId/members/:userId` | owner | Remove a non-owner member |
+| `GET` | `/api/projects/:projectId/files` | viewer | Return the nested file tree |
+| `POST` | `/api/projects/:projectId/files` | editor | Create a file or directory metadata row |
+| `GET` | `/api/projects/:projectId/files/:fileId` | viewer | Download file bytes |
+| `PUT` | `/api/projects/:projectId/files/:fileId` | editor | Write file bytes |
+| `PATCH` | `/api/projects/:projectId/files/:fileId` | editor | Rename a file or directory |
+| `DELETE` | `/api/projects/:projectId/files/:fileId` | editor | Delete a file or directory recursively |
+| `POST` | `/api/projects/:projectId/files/hydrate` | viewer | Fetch multiple file contents by ID |
+
+File content writes accept either:
+
+```http
+PUT /api/projects/:projectId/files/:fileId
+Content-Type: application/octet-stream
+
+<raw bytes>
+```
+
+or a JSON body `{ "contentBase64": "..." }`. Writes above
+`MAX_FILE_SIZE_MB` return `400 file_too_large`; malformed or oversized request
+bodies return `400 INVALID_JSON` or `413 PAYLOAD_TOO_LARGE`. Downloads use
+`application/octet-stream` because file rows store metadata only and have no
+persisted content type.
+
+### Storage model and reconciliation
+
+- Object keys are derived only from server-generated IDs:
+  `projects/{projectId}/files/{fileId}` and
+  `projects/{projectId}/snapshots/{snapshotId}.json`.
+- Renames update `files.path` only; the S3 key never changes.
+- Creating a file writes an empty object before inserting metadata. If the
+  insert loses a uniqueness race, the new object is deleted on a best-effort
+  basis.
+- Writing content with an unchanged SHA-256 hash skips the S3 upload and only
+  refreshes `updated_at` / `updated_by`.
+- Deletes commit PostgreSQL metadata first, then delete S3 objects in batches.
+  Project deletes collect file and snapshot keys before the cascade.
+- If S3 cleanup fails after metadata is committed, the API logs an
+  `s3_reconciliation_required` event with the affected keys/counts instead of
+  rolling back metadata. A background reconciler can consume those logs later;
+  the request still succeeds because the database is the source of truth.
+- `GET /api/projects/:projectId/files/hydrate` accepts
+  `{ "fileIds": ["..."] }` and returns
+  `{ "files": [{ "path": "src/main.ts", "contentBase64": "..." }] }`, using at
+  most eight concurrent S3 reads.
+
+The integration tests use a real PostgreSQL database when
+`TEST_DATABASE_URL` is set. The file integration test uses an in-memory S3
+double, so it does not require MinIO; MinIO is still recommended for manual and
+end-to-end checks.
 
 `requireAuth` and `optionalAuth` populate `req.user`. Project routes use
 `requireProjectRole(...)`, `requireOwner`, `requireEditor`, or `requireViewer`.

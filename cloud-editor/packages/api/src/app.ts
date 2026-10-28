@@ -13,6 +13,7 @@ import { pinoHttp } from "pino-http";
 import { API_PREFIX, HEALTH_PATH } from "@cloud-editor/shared";
 import { env } from "./config/env.js";
 import { authRouter } from "./routes/auth.routes.js";
+import { projectRouter } from "./routes/project.routes.js";
 import { AppError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 
@@ -77,8 +78,11 @@ app.use(
     maxAge: 86_400
   })
 );
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+const maxJsonBodyBytes =
+  Math.ceil((env.MAX_FILE_SIZE_MB * 1024 * 1024 * 4) / 3) + 1024 * 1024;
+
+app.use(express.json({ limit: maxJsonBodyBytes }));
+app.use(express.urlencoded({ extended: false, limit: maxJsonBodyBytes }));
 app.use(cookieParser());
 
 app.get(HEALTH_PATH, (_req, res) => {
@@ -97,6 +101,8 @@ if (routes.length > 0) {
 }
 
 app.use("/api/auth", authRouter);
+app.use("/api/projects", projectRouter);
+app.use(`${API_PREFIX}/projects`, projectRouter);
 
 app.use((req, res) => {
   res.status(404).json({
@@ -134,6 +140,40 @@ const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     }
 
     res.status(error.status).json({ error: payload });
+    return;
+  }
+
+  const bodyParserError = error as {
+    type?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+  };
+  const bodyParserStatus =
+    typeof bodyParserError.status === "number"
+      ? bodyParserError.status
+      : typeof bodyParserError.statusCode === "number"
+        ? bodyParserError.statusCode
+        : undefined;
+
+  if (bodyParserStatus === 413 || bodyParserError.type === "entity.too.large") {
+    requestLogger.warn({ err: error, requestId: requestIdValue }, "Request body too large");
+    res.status(413).json({
+      error: {
+        code: "PAYLOAD_TOO_LARGE",
+        message: "Request body exceeds the configured limit"
+      }
+    });
+    return;
+  }
+
+  if (bodyParserStatus === 400 || bodyParserError.type === "entity.parse.failed") {
+    requestLogger.warn({ err: error, requestId: requestIdValue }, "Malformed request body");
+    res.status(400).json({
+      error: {
+        code: "INVALID_JSON",
+        message: "Malformed JSON request body"
+      }
+    });
     return;
   }
 
