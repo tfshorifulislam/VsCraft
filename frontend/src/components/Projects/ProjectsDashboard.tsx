@@ -281,6 +281,16 @@ export default function ProjectsDashboard() {
     }
   };
 
+  const handleOpenNewTerminal = async () => {
+    try {
+      const session = await cloudApi.terminal.startSession("New Terminal Project");
+      router.push(`/editor/${session.projectId}?init=terminal`);
+    } catch (err) {
+      console.error("Open terminal error:", err);
+      alert("Failed to open real terminal.");
+    }
+  };
+
   const handleCreateFromTemplate = async (template: ProjectTemplate) => {
     try {
       setIsLoading(true);
@@ -391,7 +401,7 @@ export default function ProjectsDashboard() {
       <ProjectsSidebar
         currentCategory={currentCategory}
         onSelectCategory={setCurrentCategory}
-        onOpenNewProject={() => setIsNewProjectOpen(true)}
+        onOpenNewProject={handleOpenNewTerminal}
         onCreateEmptyProject={handleCreateEmptyProject}
         isCreatingEmpty={isCreatingEmpty}
         counts={counts}
@@ -410,7 +420,7 @@ export default function ProjectsDashboard() {
           onFilterChange={setFilterType}
           sortBy={sortBy}
           onSortChange={setSortBy}
-          onOpenNewProject={() => setIsNewProjectOpen(true)}
+          onOpenNewProject={handleOpenNewTerminal}
           onCreateEmptyProject={handleCreateEmptyProject}
           isCreatingEmpty={isCreatingEmpty}
           onOpenImportProject={handleImportFolder}
@@ -522,7 +532,7 @@ export default function ProjectsDashboard() {
             <ProjectEmptyState
               category={currentCategory}
               isSearchActive={Boolean(searchQuery.trim())}
-              onOpenNewProject={() => setIsNewProjectOpen(true)}
+              onOpenNewProject={handleOpenNewTerminal}
               onCreateEmptyProject={handleCreateEmptyProject}
               isCreatingEmpty={isCreatingEmpty}
               onClearSearch={() => setSearchQuery("")}
