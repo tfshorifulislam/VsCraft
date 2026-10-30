@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ArrowRight, RefreshCw } from "lucide-react";
@@ -9,18 +15,46 @@ import { apiFetch } from "@/lib/api";
 
 interface TerminalProps {
   projectId: string;
-  onOpenEditor: () => void;
+  onOpenEditor?: () => void;
+  onSessionActiveChange?: (active: boolean) => void;
+  autoFocus?: boolean;
+}
+
+export interface TerminalHandle {
+  focus: () => void;
+  reconnect: () => void;
 }
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
-export default function Terminal({ projectId, onOpenEditor }: TerminalProps) {
+const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
+  {
+    projectId,
+    onOpenEditor,
+    onSessionActiveChange,
+    autoFocus = false,
+  },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const [state, setState] = useState<ConnectionState>("connecting");
   const [attempt, setAttempt] = useState(0);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => termRef.current?.focus(),
+      reconnect: () => setAttempt((value) => value + 1),
+    }),
+    []
+  );
+
+  useEffect(() => {
+    onSessionActiveChange?.(state === "connected");
+  }, [state, onSessionActiveChange]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -66,6 +100,16 @@ export default function Terminal({ projectId, onOpenEditor }: TerminalProps) {
     term.open(container);
     termRef.current = term;
     fitRef.current = fit;
+
+    if (autoFocus) {
+      requestAnimationFrame(() => {
+        try {
+          term.focus();
+        } catch {
+          // The terminal may not be focusable before layout settles.
+        }
+      });
+    }
 
     const safeFit = () => {
       try {
@@ -185,7 +229,7 @@ export default function Terminal({ projectId, onOpenEditor }: TerminalProps) {
       fitRef.current = null;
       setState("connecting");
     };
-  }, [projectId, attempt]);
+  }, [projectId, attempt, autoFocus]);
 
   return (
     <div className="flex h-full flex-col">
@@ -225,19 +269,23 @@ export default function Terminal({ projectId, onOpenEditor }: TerminalProps) {
         <div ref={containerRef} className="h-full w-full" />
       </div>
 
-      <div className="flex items-center justify-between border-t border-[#2d2d2d] bg-[#252526] px-4 py-3">
-        <p className="text-xs text-[#8a8a8a]">
-          Files created here sync to the database automatically.
-        </p>
-        <button
-          type="button"
-          onClick={onOpenEditor}
-          className="inline-flex items-center gap-2 rounded-lg bg-[#0d99ff] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0b87e3]"
-        >
-          Open Editor
-          <ArrowRight className="h-4 w-4" />
-        </button>
-      </div>
+      {onOpenEditor && (
+        <div className="flex items-center justify-between border-t border-[#2d2d2d] bg-[#252526] px-4 py-3">
+          <p className="text-xs text-[#8a8a8a]">
+            Files created here sync to the database automatically.
+          </p>
+          <button
+            type="button"
+            onClick={onOpenEditor}
+            className="inline-flex items-center gap-2 rounded-lg bg-[#0d99ff] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0b87e3]"
+          >
+            Open Editor
+            <ArrowRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
-}
+});
+
+export default Terminal;

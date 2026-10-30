@@ -7,13 +7,17 @@ and the xterm.js terminal client.
 ## Routes
 
 - `/login`, `/signup` — auth
-- `/dashboard` — Figma-style project grid + New Project
+- `/dashboard` — Figma-style project grid; New Project creates a record and
+  opens the reusable terminal modal
 - `/project/[id]` — terminal tab + editor tab (Open Editor)
 - `/api/auth/*` — signup, login, logout, me, ws-token
 - `/api/projects/*`, `/api/files/*` — database CRUD
 
 All project data is stored in the `files` table via Prisma. No file is written
-to the server filesystem or to browser localStorage.
+to the server filesystem or to browser localStorage. The dashboard terminal is
+rendered by `src/components/ui/TerminalModal.tsx`; its WebSocket/PTY lifecycle
+is tied to the modal being mounted, and closing the modal tears the session
+down.
 
 ## Run
 

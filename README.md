@@ -36,7 +36,7 @@ Express realtime container (Render / Railway / Fly.io)
 - [x] Database schema + migration (`users`, `projects`, `files`, `terminal_logs`)
 - [x] Auth (signup, login, logout, session cookie, route protection)
 - [x] Figma-style dashboard + project cards + New Project
-- [x] New Project creates a DB record and opens a terminal
+- [x] New Project creates a DB record and opens the terminal in a modal
 - [x] Real PTY terminal over WebSocket (`xterm.js` ↔ `node-pty`)
 - [x] Terminal files sync to the `files` table (ephemeral dir, DB only)
 - [x] "Open Editor" button + Monaco loaded from the database
@@ -53,6 +53,7 @@ frontend/                 Next.js App Router app (all DB CRUD + UI)
   src/app/(dashboard)/    /dashboard, /project/[id]
   src/app/api/            Auth + project + file route handlers
   src/components/dashboard/ProjectCard.tsx, NewProjectButton.tsx
+  src/components/ui/TerminalModal.tsx
   src/components/terminal/Terminal.tsx
   src/components/editor/CodeEditor.tsx, FileTree.tsx
   src/lib/db.ts           Prisma client
@@ -218,15 +219,42 @@ server/function logs for `[login]`:
 
 1. Sign up / sign in.
 2. Land on the Figma-style dashboard of your projects.
-3. Click **New Project** → a DB record is created and the project page opens
-   on the terminal.
+3. Click **New Project** → a DB record is created and the terminal opens in a
+   modal over the dashboard.
 4. Run real commands (`npm create vite@latest`, `ls`, `mkdir`, ...).
-5. Click **Open Editor** → Monaco loads the project tree and contents from the
-   database.
+5. Click **Open Editor** in the modal footer → the modal closes and Monaco
+   loads the project tree and contents from the database.
 6. Edit a file → autosaves after 800 ms, or press `Ctrl/Cmd+S`.
 7. Terminal-created files appear in the explorer after **Refresh** (or on
    reopening the editor). They are synced into `files` while the session runs
    and one final time when it ends.
+
+## Terminal
+
+The dashboard terminal is a reusable modal (`src/components/ui/TerminalModal.tsx`)
+with a dimmed backdrop, the project name, an xterm.js body, and an **Open
+Editor** footer action. It is responsive, traps focus, restores focus on close,
+supports Escape and backdrop clicks, and locks body scroll. If a PTY session is
+active, the first close request shows an inline confirmation inside the modal
+(no native/browser permission popups).
+
+The WebSocket is created only while the modal is mounted. Closing the modal
+unmounts `Terminal`, which closes the socket; the realtime backend then kills
+the PTY, performs a final database sync, and removes the ephemeral temp
+directory. Opening the editor closes the modal first, so the terminal session
+is torn down before navigation.
+
+### Why the browser cannot open your OS terminal
+
+Browsers are sandboxed and cannot launch local executables such as Windows
+Terminal, macOS Terminal, or a Linux terminal emulator from a web page. Custom
+URL schemes (for example `myapp://`) require a one-time OS-level install and
+registration and normally show a browser confirmation on each launch, which
+violates the "no repeated prompts" requirement. The supported, fully working
+experience is the in-app modal terminal: xterm.js in the browser connected over
+WebSocket to a real `node-pty` shell on the realtime backend. No project files
+are stored on the backend; the PTY workspace is ephemeral and syncs to the
+database.
 
 ## WebSocket protocol
 
