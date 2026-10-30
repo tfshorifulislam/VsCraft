@@ -26,4 +26,7 @@ npm run dev                 # http://localhost:3000
 
 The terminal WebSocket URL is `NEXT_PUBLIC_TERMINAL_WS_URL`
 (default `ws://localhost:4000/terminal`). Deploy to Vercel with
-`DATABASE_URL`, `JWT_SECRET`, and `NEXT_PUBLIC_TERMINAL_WS_URL` set.
+`DATABASE_URL` (hosted Postgres, not `localhost`), `JWT_SECRET` (32+ characters,
+same as the realtime service), and `NEXT_PUBLIC_TERMINAL_WS_URL` set, then run
+`npx prisma migrate deploy` against the production database. See the root
+`README.md` for auth troubleshooting ("Could not sign you in.").

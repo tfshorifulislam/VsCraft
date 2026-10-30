@@ -4,10 +4,16 @@ export const AUTH_COOKIE = "codefigma_token";
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
 
 // Must match backend/src/config.ts so the realtime server can verify tokens.
-const secret = new TextEncoder().encode(
-  process.env.JWT_SECRET ||
-    "codefigma-dev-secret-change-me-please-32-chars-minimum"
-);
+const DEV_SECRET = "codefigma-dev-secret-change-me-please-32-chars-minimum";
+const jwtSecret = process.env.JWT_SECRET;
+
+if (process.env.NODE_ENV === "production" && (!jwtSecret || jwtSecret.length < 32)) {
+  throw new Error(
+    "JWT_SECRET must be set to at least 32 characters in production. Generate one with `openssl rand -base64 32` and add it to the deployment environment."
+  );
+}
+
+const secret = new TextEncoder().encode(jwtSecret || DEV_SECRET);
 
 export interface SessionPayload {
   userId: string;

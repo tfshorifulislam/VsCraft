@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { verifyPassword } from "@/lib/auth";
+import { describeAuthError } from "@/lib/auth-errors";
 import { AUTH_COOKIE, SESSION_MAX_AGE, signSessionToken } from "@/lib/jwt";
 
 export async function POST(request: Request) {
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
     return response;
   } catch (error) {
     console.error("[login]", error);
-    return NextResponse.json({ error: "Could not sign you in." }, { status: 500 });
+    const { status, message } = describeAuthError(error, "Could not sign you in.");
+    return NextResponse.json({ error: message }, { status });
   }
 }

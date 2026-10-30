@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { hashPassword } from "@/lib/auth";
+import { describeAuthError } from "@/lib/auth-errors";
 import { AUTH_COOKIE, SESSION_MAX_AGE, signSessionToken } from "@/lib/jwt";
 
 export async function POST(request: Request) {
@@ -46,6 +47,10 @@ export async function POST(request: Request) {
     return response;
   } catch (error) {
     console.error("[signup]", error);
-    return NextResponse.json({ error: "Could not create your account." }, { status: 500 });
+    const { status, message } = describeAuthError(
+      error,
+      "Could not create your account."
+    );
+    return NextResponse.json({ error: message }, { status });
   }
 }

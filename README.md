@@ -187,6 +187,33 @@ npm run dev                   # http://localhost:3000
 | `SYNC_INTERVAL_MS` | backend | Terminal→DB reconciliation interval |
 | `MAX_SYNC_FILE_BYTES` | backend | Skip larger files when syncing |
 
+> **Deploying to Vercel?** Project → Settings → Environment Variables must
+> contain `DATABASE_URL` (a hosted Postgres URL, never `localhost`),
+> `JWT_SECRET` (the same value used by the realtime service), and
+> `NEXT_PUBLIC_TERMINAL_WS_URL`. Local `.env` files are gitignored and are not
+> uploaded to Vercel. If you use the Vercel Postgres/Neon integration, the app
+> also accepts `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` /
+> `POSTGRES_URL` at runtime, but `prisma migrate deploy` still reads
+> `DATABASE_URL`.
+
+### Auth troubleshooting ("Could not sign you in.")
+
+Auth is a small JWT-cookie implementation (`src/lib/auth.ts`,
+`src/lib/jwt.ts`), **not NextAuth**. The generic message means
+`/api/auth/login` threw before it could issue a session cookie. Check the
+server/function logs for `[login]`:
+
+1. `PrismaClientInitializationError` / "Can't reach database server" — the
+   deployment cannot reach `DATABASE_URL`. Use a hosted Postgres URL (add
+   `?sslmode=require` when the provider requires TLS), not `localhost`.
+2. Prisma `P2021` / "table does not exist" — run
+   `npx prisma migrate deploy` against that same database.
+3. "JWT_SECRET must be set to at least 32 characters in production" — add a
+   strong `JWT_SECRET` to the deployment environment and keep it identical on
+   the realtime service.
+4. "Invalid email or password" is a 401, not this error: verify the account
+   exists and the password is correct.
+
 ## User flow
 
 1. Sign up / sign in.
@@ -240,9 +267,11 @@ never persists content; the database remains the source of truth.
 
 ## Deployment
 
-- **Frontend → Vercel.** Set `DATABASE_URL`, `JWT_SECRET`, and
-  `NEXT_PUBLIC_TERMINAL_WS_URL`. Run `prisma migrate deploy` as part of your
-  release step (or once against the production database). `vercel.json` is
+- **Frontend → Vercel.** Set `DATABASE_URL` (hosted Postgres), `JWT_SECRET`
+  (same as the realtime service), and `NEXT_PUBLIC_TERMINAL_WS_URL`. Run
+  `npx prisma migrate deploy` as part of your release step (or once against the
+  production database) **before** the first sign-in; without the tables,
+  `/api/auth/login` returns a 503 with a schema message. `vercel.json` is
   included.
 - **Realtime backend → Render / Railway / Fly.io.** Use `backend/Dockerfile`
   (a `render.yaml` blueprint is included). A live PTY needs a long-lived
