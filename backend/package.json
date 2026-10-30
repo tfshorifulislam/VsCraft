@@ -1,41 +1,31 @@
 {
-  "name": "code-editor-backend",
+  "name": "codefigma-backend",
   "version": "0.1.0",
   "private": true,
-  "main": "dist/server.js",
+  "description": "Realtime-only backend for CodeFigma (WebSocket terminal + editor sync)",
+  "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "test:import": "node -r dotenv/config scripts/import-regression.cjs",
-    "test:isolation": "node -r dotenv/config scripts/project-isolation-regression.cjs",
-    "test:terminal": "node -r dotenv/config scripts/terminal-workflow-regression.cjs",
-    "test:terminal-e2e": "node -r dotenv/config scripts/terminal-project-e2e.cjs",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push"
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy"
   },
   "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.15.0",
     "@prisma/client": "6.4.1",
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "esbuild": "^0.28.2",
     "express": "^4.21.2",
     "jose": "^6.2.13",
-    "jszip": "^3.10.2",
-    "node-pty": "^1.1.0",
-    "prisma": "6.4.1",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cookie-parser": "^1.4.8",
-    "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
-    "@types/jszip": "^3.4.0",
     "@types/node": "^20.17.24",
     "@types/ws": "^8.18.2",
+    "prisma": "6.4.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   }

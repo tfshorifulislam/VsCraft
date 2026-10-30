@@ -1,50 +1,29 @@
-# Code Editor Frontend
+# CodeFigma Frontend
 
-A modern Next.js 15+ App Router web application providing the user interface for the cloud-native Code Editor IDE.
+Next.js App Router application for CodeFigma. It owns authentication, the
+Figma-style dashboard, project/file CRUD against PostgreSQL, the Monaco editor,
+and the xterm.js terminal client.
 
-## Features
+## Routes
 
-- **Monaco Code Editor**: Syntax highlighting, intelligent autocompletion, multiple themes, tab management, and error diagnostics.
-- **Empty Project & Templates**: Create completely empty projects or use starter templates (Next.js, React, Node.js, HTML/CSS).
-- **PTY Terminal Panel**: Interactive terminal with toggle visibility, command execution, and session persistence via WebSockets.
-- **Run Preview**: Explicitly controlled live preview frame with hot reload and isolated preview state.
-- **AI Assistant**: Multi-provider code generation, explanation, refactoring, and inline completions (OpenAI, Anthropic, Gemini).
-- **Full Authentication**: User signup, signin, cookie-based sessions, and protected workspaces.
+- `/login`, `/signup` — auth
+- `/dashboard` — Figma-style project grid + New Project
+- `/project/[id]` — terminal tab + editor tab (Open Editor)
+- `/api/auth/*` — signup, login, logout, me, ws-token
+- `/api/projects/*`, `/api/files/*` — database CRUD
 
-## Getting Started
+All project data is stored in the `files` table via Prisma. No file is written
+to the server filesystem or to browser localStorage.
 
-### 1. Install Dependencies
+## Run
 
 ```bash
+cp .env.example .env
 npm install
+npx prisma migrate deploy   # same DATABASE_URL as the backend
+npm run dev                 # http://localhost:3000
 ```
 
-### 2. Configure Environment
-
-Copy `.env.example` to `.env.local`:
-
-```bash
-cp .env.example .env.local
-```
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `BACKEND_URL` | Express API server URL for Next.js API rewrites | `http://localhost:4000` |
-| `NEXT_PUBLIC_API_URL` | Client-accessible API base URL | `http://localhost:4000` |
-| `NEXT_PUBLIC_WS_URL` | WebSocket URL for PTY terminal session | `ws://localhost:3005` |
-
-### 3. Run Development Server
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-### 4. Build for Production
-
-```bash
-npm run build
-npm run start
-```
-
+The terminal WebSocket URL is `NEXT_PUBLIC_TERMINAL_WS_URL`
+(default `ws://localhost:4000/terminal`). Deploy to Vercel with
+`DATABASE_URL`, `JWT_SECRET`, and `NEXT_PUBLIC_TERMINAL_WS_URL` set.

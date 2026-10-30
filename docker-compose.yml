@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: codefigma-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: codefigma
+      POSTGRES_PASSWORD: codefigma
+      POSTGRES_DB: codefigma
+    ports:
+      - "5432:5432"
+    volumes:
+      - codefigma_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codefigma -d codefigma"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  codefigma_pgdata:
