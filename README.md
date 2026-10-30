@@ -146,10 +146,34 @@ sync terminal files with the same client.
 
 ## Local setup
 
-### 1. Start PostgreSQL
+### 1. Database setup / start
+
+Start the local PostgreSQL 16 container (credentials match `.env.example`):
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
+docker compose ps
+```
+
+If Docker is not available, install/start PostgreSQL 16 locally and create a
+`codefigma` role/database, or point `DATABASE_URL` at a hosted PostgreSQL
+instance. The app connects with `DATABASE_URL`; it must be set in **both**
+`frontend/.env` and `backend/.env`:
+
+```bash
+DATABASE_URL="postgresql://codefigma:codefigma@localhost:5432/codefigma?schema=public"
+```
+
+Copy it from `.env.example`; never commit real credentials. If the app reports
+`Can't reach database server at localhost:5432`, nothing is listening on that
+port: start the container (or fix `DATABASE_URL` if the database is remote).
+
+Verify the server before applying migrations:
+
+```bash
+pg_isready -h localhost -p 5432 -U codefigma
+# or, when using Docker:
+docker compose exec postgres pg_isready -U codefigma -d codefigma
 ```
 
 ### 2. Backend (realtime)
