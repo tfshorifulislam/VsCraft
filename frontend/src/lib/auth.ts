@@ -27,10 +27,15 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const payload = await verifySessionToken(token);
   if (!payload) return null;
 
-  const user = await prisma.user.findUnique({
-    where: { id: payload.userId },
-    select: { id: true, email: true, name: true, createdAt: true },
-  });
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { id: true, email: true, name: true, createdAt: true },
+    });
 
-  return user;
+    return user;
+  } catch (err) {
+    console.error("Failed to fetch session user from database:", err);
+    return null;
+  }
 }

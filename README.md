@@ -144,37 +144,114 @@ files and terminal logs. The canonical schema is `frontend/prisma/schema.prisma`
 `backend/prisma/schema.prisma` is an identical copy so the realtime service can
 sync terminal files with the same client.
 
-## Local setup
+## Database setup
 
-### 1. Database setup / start
+### Starting PostgreSQL
 
-Start the local PostgreSQL 16 container (credentials match `.env.example`):
+1. **Via Docker Compose (recommended):**
+   ```bash
+   docker compose up -d postgres
+   docker compose ps
+   ```
+
+2. **Via systemd (Linux host):**
+   ```bash
+   sudo systemctl start postgresql && sudo systemctl enable postgresql
+   ```
+
+3. **Via standalone / userspace daemon:**
+   ```bash
+   # Initialize data cluster (first time)
+   initdb -D /tmp/postgres-data -U codefigma --auth=trust
+   # Start the daemon
+   postgres -D /tmp/postgres-data
+   ```
+
+### Required `DATABASE_URL` format and keys
+
+The application expects `DATABASE_URL` in both `frontend/.env` and `backend/.env`:
 
 ```bash
-docker compose up -d postgres
-docker compose ps
+DATABASE_URL="postgresql://<user>:<password>@<host>:<port>/<dbname>?schema=public"
 ```
 
-If Docker is not available, install/start PostgreSQL 16 locally and create a
-`codefigma` role/database, or point `DATABASE_URL` at a hosted PostgreSQL
-instance. The app connects with `DATABASE_URL`; it must be set in **both**
-`frontend/.env` and `backend/.env`:
-
+Default local configuration matching `docker-compose.yml` and `.env.example`:
 ```bash
 DATABASE_URL="postgresql://codefigma:codefigma@localhost:5432/codefigma?schema=public"
 ```
 
-Copy it from `.env.example`; never commit real credentials. If the app reports
-`Can't reach database server at localhost:5432`, nothing is listening on that
-port: start the container (or fix `DATABASE_URL` if the database is remote).
-
-Verify the server before applying migrations:
-
+Verify the database is listening before starting the services:
 ```bash
 pg_isready -h localhost -p 5432 -U codefigma
-# or, when using Docker:
-docker compose exec postgres pg_isready -U codefigma -d codefigma
 ```
+
+### Applying Schema & Generating Client
+
+Run these commands in `frontend` (and `backend`):
+```bash
+# 1. Generate Prisma Client
+npx prisma generate
+
+# 2. Push schema to PostgreSQL database
+npx prisma db push
+
+# (Alternatively, run migrations)
+npx prisma migrate dev
+```
+
+## Auth routing
+
+### Protected vs Public Routes
+
+- **Public routes:**
+  - `/` (landing / root dispatcher: checks session and redirects to `/dashboard` or `/login`)
+  - `/login` (login page)
+  - `/signup` (registration page)
+  - `/api/auth/*` (auth handlers: login, signup, logout, session verification)
+  - `/_next/*`, `/favicon.ico` (static build assets)
+
+- **Protected routes:**
+  - `/dashboard` (projects overview)
+  - `/project/:id` (editor and terminal workspace)
+  - `/api/projects/*`, `/api/files/*` (project and file CRUD)
+
+### Middleware Matcher Rules
+
+The Next.js proxy/middleware matcher is scoped strictly to protected routes:
+
+```ts
+export const config = {
+  matcher: ["/dashboard/:path*", "/project/:path*"],
+};
+```
+
+Within the middleware body, access is guarded:
+```ts
+if (!session && pathname !== "/login") {
+  const url = request.nextUrl.clone();
+  url.pathname = "/login";
+  url.search = "";
+  url.searchParams.set("from", pathname);
+  return NextResponse.redirect(url);
+}
+```
+
+### Why the Redirect Loop Happened & How It Was Fixed
+
+1. **Root cause of the loop:**
+   - The middleware matcher previously included `"/login"` and `"/signup"` alongside protected routes (`matcher: ["/dashboard/:path*", "/project/:path*", "/login", "/signup"]`).
+   - If a browser held a previously signed JWT session cookie (or dev cookie), the middleware's stateless JWT verification (`verifySessionToken`) evaluated `session` as truthy without querying PostgreSQL.
+   - When visiting `/login`, the middleware saw `session` and redirected to `/dashboard`.
+   - On `/dashboard`, the server component called `getSessionUser()`, which queries the PostgreSQL `User` table. Because the database was down or the user was deleted/missing, `getSessionUser()` returned `null`.
+   - `/dashboard` then executed `if (!user) redirect("/login")`, bouncing the browser back to `/login`.
+   - On `/login`, the middleware once again saw the valid JWT token and redirected to `/dashboard`, creating an infinite `ERR_TOO_MANY_REDIRECTS` loop.
+
+2. **The fix:**
+   - **Narrow the matcher:** The middleware matcher now only matches `['/dashboard/:path*', '/project/:path*']`. Middleware never executes on `/login`, `/signup`, or public routes.
+   - **Guard redirects:** Middleware never redirects if the requested path is already `/login`.
+   - **Resilient auth queries:** `getSessionUser` in `src/lib/auth.ts` catches Prisma connection errors gracefully, logging the failure server-side and returning `null` rather than throwing a hard 500.
+
+## Local setup
 
 ### 2. Backend (realtime)
 

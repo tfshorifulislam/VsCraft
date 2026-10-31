@@ -5,31 +5,35 @@ const PROTECTED_PREFIXES = ["/dashboard", "/project"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const token = request.cookies.get(AUTH_COOKIE)?.value;
-  const session = await verifySessionToken(token);
+
+  if (pathname === "/login") {
+    return NextResponse.next();
+  }
 
   const isProtected = PROTECTED_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
 
-  if (isProtected && !session) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
-    url.search = "";
-    url.searchParams.set("from", pathname);
-    return NextResponse.redirect(url);
-  }
+  if (isProtected) {
+    const token = request.cookies.get(AUTH_COOKIE)?.value;
+    const session = await verifySessionToken(token);
 
-  if (session && (pathname === "/login" || pathname === "/signup")) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    url.search = "";
-    return NextResponse.redirect(url);
+    if (!session && pathname !== "/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      url.search = "";
+      url.searchParams.set("from", pathname);
+      return NextResponse.redirect(url);
+    }
   }
 
   return NextResponse.next();
 }
 
+export const middleware = proxy;
+export default proxy;
+
 export const config = {
-  matcher: ["/dashboard/:path*", "/project/:path*", "/login", "/signup"],
+  matcher: ["/dashboard/:path*", "/project/:path*"],
 };
+
