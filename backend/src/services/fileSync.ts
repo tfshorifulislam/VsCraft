@@ -65,10 +65,6 @@ function looksBinary(buffer: Buffer): boolean {
   return false;
 }
 
-/**
- * Writes the project's database files into an ephemeral session directory.
- * Nothing written here outlives the terminal session.
- */
 export async function materializeProjectFiles(
   projectId: string,
   dir: string
@@ -130,14 +126,6 @@ export interface SyncResult {
   baseline: FileBaseline;
 }
 
-/**
- * Reconciles the ephemeral session directory back into the `files` table.
- *
- * Only files that changed on disk are upserted. Files that were part of the
- * original baseline but have been removed on disk are deleted. Files created in
- * the database *after* the session started are left untouched to avoid wiping
- * editor-side work.
- */
 export async function syncDirectoryToDatabase(
   projectId: string,
   dir: string,
